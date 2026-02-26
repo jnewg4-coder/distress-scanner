@@ -1,0 +1,1850 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Distress Scanner — Command Center</title>
+<link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+<script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+<script>
+// Load Google Maps JS API dynamically after config fetch
+function loadGMapsAPI(key){
+  if(!key||document.getElementById('gmaps-js'))return;
+  const s=document.createElement('script');
+  s.id='gmaps-js';
+  s.src=`https://maps.googleapis.com/maps/api/js?key=${key}&libraries=geometry`;
+  document.head.appendChild(s);
+}
+// Initialize Street View facing the property
+function initStreetView(containerId,lat,lng,retries){
+  retries=retries||0;
+  if(!window.google||!google.maps){
+    if(retries<20)setTimeout(()=>initStreetView(containerId,lat,lng,retries+1),500);
+    return;
+  }
+  const target=new google.maps.LatLng(lat,lng);
+  const sv=new google.maps.StreetViewService();
+  sv.getPanorama({location:target,radius:80,source:google.maps.StreetViewSource.OUTDOOR},(data,status)=>{
+    const el=document.getElementById(containerId);
+    if(!el)return;
+    if(status==='OK'){
+      const heading=google.maps.geometry.spherical.computeHeading(data.location.latLng,target);
+      new google.maps.StreetViewPanorama(el,{
+        position:data.location.latLng,
+        pov:{heading:heading,pitch:0},
+        zoom:0,
+        disableDefaultUI:true,
+        zoomControl:true,
+        panControl:true,
+        linksControl:false,
+        showRoadLabels:false
+      });
+    }else{
+      el.innerHTML='<div style="height:100%;display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:10px">No Street View coverage</div>';
+    }
+  });
+}
+</script>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+--bg:#0a0e14;--bg2:#111820;--bg3:#1a2130;--border:#1e2a3a;
+--text:#adbac7;--text2:#768390;--white:#e6edf3;
+--green:#00ff9f;--green2:#238636;--red:#f85149;--red2:#ff0066;
+--orange:#f0883e;--yellow:#e3b341;--blue:#58a6ff;--cyan:#39d2e0;
+--purple:#bc8cff;
+--font:'SF Mono','JetBrains Mono','Fira Code','Cascadia Code',monospace;
+}
+html,body{height:100%;overflow:hidden;background:var(--bg);color:var(--text);font:12px/1.4 var(--font)}
+a{color:var(--blue);text-decoration:none}
+#app{display:grid;grid-template-rows:32px 36px auto auto 1fr;height:100vh;padding-bottom:18px}
+
+/* HEADER */
+#header{display:flex;align-items:center;justify-content:space-between;padding:0 10px;background:var(--bg2);border-bottom:1px solid var(--border)}
+#header .title{color:var(--green);font-weight:700;font-size:13px;letter-spacing:1px}
+.mode-tag{font-size:9px;padding:2px 6px;border-radius:2px;font-weight:700;letter-spacing:.5px;margin-left:8px}
+.mode-filter{background:#1a2d1a;color:var(--green)}
+.mode-scanned{background:#1a1a3d;color:var(--cyan)}
+#header .sources{display:flex;gap:10px;align-items:center}
+.src-led{display:inline-flex;align-items:center;gap:3px;font-size:10px;text-transform:uppercase;color:var(--text2)}
+.src-led .dot{width:6px;height:6px;border-radius:50%;display:inline-block}
+.dot.on{background:var(--green);box-shadow:0 0 4px var(--green)}.dot.off{background:#333}.dot.warn{background:var(--orange)}
+#clock{color:var(--text2);font-size:11px}
+
+/* METRICS */
+#metrics{display:flex;gap:1px;background:var(--border)}
+.metric{flex:1;display:flex;flex-direction:column;justify-content:center;align-items:center;background:var(--bg2);padding:2px 0}
+.metric .val{font-size:15px;font-weight:700;color:var(--white)}
+.metric .label{font-size:8px;text-transform:uppercase;color:var(--text2);letter-spacing:.5px}
+.metric.green .val{color:var(--green)}.metric.red .val{color:var(--red)}.metric.orange .val{color:var(--orange)}.metric.blue .val{color:var(--blue)}.metric.cyan .val{color:var(--cyan)}
+
+/* CONTROLS */
+#controls{padding:4px 8px;background:var(--bg2);border-bottom:1px solid var(--border);display:flex;gap:4px;align-items:center;flex-wrap:nowrap}
+#controls input,#controls select{background:var(--bg);border:1px solid var(--border);color:var(--white);padding:2px 5px;font:10px var(--font);border-radius:2px}
+#controls input:focus,#controls select:focus{border-color:var(--blue);outline:none}
+#controls input[type="number"]{width:60px}
+#controls button{background:var(--green2);color:var(--white);border:none;padding:3px 8px;font:10px/1 var(--font);cursor:pointer;border-radius:2px;font-weight:600}
+#controls button:hover{background:var(--green);color:var(--bg)}
+#controls button.secondary{background:var(--bg3);color:var(--text)}
+#controls button.secondary:hover{background:var(--border)}
+#controls button:disabled{opacity:.4;cursor:not-allowed}
+#controls button.preset{background:#1a2d3a;color:var(--cyan);border:1px solid #1e3a4a;font-size:9px;padding:2px 6px}
+#controls button.preset:hover{background:#1e3a5f}
+.ctrl-sep{width:1px;height:18px;background:var(--border);margin:0 2px}
+.ctrl-label{font-size:8px;color:var(--text2);text-transform:uppercase}
+.page-info{font-size:10px;color:var(--text2);margin-left:auto;white-space:nowrap}
+
+/* FILTER BAR */
+#filter-bar{display:flex;gap:4px;align-items:center;padding:3px 8px;background:var(--bg2);border-bottom:1px solid var(--border);min-height:28px;flex-wrap:nowrap;overflow-x:auto}
+#filter-bar::-webkit-scrollbar{height:3px}
+.fb-group{display:flex;align-items:center;gap:2px}
+.fb-label{font-size:9px;color:var(--text2);text-transform:uppercase;letter-spacing:.3px;margin-right:2px;white-space:nowrap;font-weight:600}
+.fb-sep{width:1px;height:16px;background:var(--border);margin:0 3px;flex-shrink:0}
+.pill{display:inline-flex;align-items:center;gap:3px;padding:3px 8px;border:1px solid var(--border);border-radius:3px;font:10px/1.2 var(--font);cursor:pointer;white-space:nowrap;user-select:none;transition:all .12s;color:var(--text2);background:transparent}
+.pill:hover{border-color:var(--text2);color:var(--text)}
+.pill.active{border-color:var(--cyan);color:var(--cyan);background:rgba(57,210,224,.08)}
+.pill.active-green{border-color:var(--green);color:var(--green);background:rgba(0,255,159,.08)}
+.pill.active-red{border-color:var(--red);color:var(--red);background:rgba(248,81,73,.08)}
+.pill.active-orange{border-color:var(--orange);color:var(--orange);background:rgba(240,136,62,.08)}
+.pill.active-purple{border-color:var(--purple);color:var(--purple);background:rgba(188,140,255,.08)}
+.pill .pill-ct{font-size:9px;opacity:.6}
+.fb-input{background:var(--bg);border:1px solid var(--border);color:var(--white);padding:2px 5px;font:10px var(--font);border-radius:2px;width:42px;text-align:center}
+.fb-input:focus{border-color:var(--blue);outline:none}
+.fb-input.narrow{width:32px}
+.filter-badge{display:inline-flex;align-items:center;justify-content:center;background:var(--cyan);color:var(--bg);font-size:8px;font-weight:700;width:14px;height:14px;border-radius:7px;margin-left:3px}
+.btn-clear{font:8px var(--font);color:var(--text2);background:none;border:1px solid var(--border);padding:1px 5px;border-radius:2px;cursor:pointer;white-space:nowrap}
+.btn-clear:hover{color:var(--white);border-color:var(--text2)}
+
+/* DROPDOWN MULTI-SELECT */
+.ms-wrap{position:relative}
+.ms-trigger{display:inline-flex;align-items:center;gap:3px;padding:1px 5px;border:1px solid var(--border);border-radius:2px;font:9px/1 var(--font);cursor:pointer;white-space:nowrap;color:var(--text2);background:var(--bg);min-width:60px;max-width:130px}
+.ms-trigger:hover{border-color:var(--text2)}
+.ms-trigger.has-sel{border-color:var(--cyan);color:var(--cyan)}
+.ms-trigger .ms-arrow{margin-left:auto;font-size:7px}
+.ms-dropdown{position:absolute;top:100%;left:0;z-index:50;background:var(--bg2);border:1px solid var(--border);border-radius:2px;min-width:160px;max-height:200px;overflow-y:auto;display:none;box-shadow:0 4px 12px rgba(0,0,0,.5)}
+.ms-dropdown.open{display:block}
+.ms-opt{display:flex;align-items:center;gap:5px;padding:3px 6px;font:9px var(--font);cursor:pointer;color:var(--text);border-bottom:1px solid var(--border)}
+.ms-opt:last-child{border-bottom:none}
+.ms-opt:hover{background:var(--bg3)}
+.ms-opt.checked{color:var(--cyan)}
+.ms-opt .ms-check{width:10px;height:10px;border:1px solid var(--border);border-radius:1px;display:inline-flex;align-items:center;justify-content:center;font-size:8px;flex-shrink:0}
+.ms-opt.checked .ms-check{border-color:var(--cyan);background:rgba(57,210,224,.15);color:var(--cyan)}
+.ms-opt .ms-ct{margin-left:auto;font-size:8px;color:var(--text2)}
+
+/* MAIN */
+#main{display:grid;grid-template-columns:1fr 4px 380px;gap:0;background:var(--border);overflow:hidden}
+#left{display:flex;flex-direction:column;overflow:hidden;background:var(--bg)}
+#splitter{background:var(--border);cursor:col-resize;display:flex;align-items:center;justify-content:center;transition:background .15s}
+#splitter:hover,#splitter.dragging{background:var(--blue);opacity:.6}
+#splitter::after{content:'⋮';color:var(--text2);font-size:10px}
+
+/* TABLE */
+#table-wrap{flex:1;overflow:auto;background:var(--bg)}
+table{width:100%;border-collapse:collapse;font-size:11px}
+thead{position:sticky;top:0;z-index:2}
+th{background:var(--bg3);color:var(--text2);padding:3px 5px;text-align:left;font-weight:600;font-size:9px;text-transform:uppercase;letter-spacing:.3px;cursor:pointer;border-bottom:1px solid var(--border);white-space:nowrap;user-select:none}
+th:hover{color:var(--white)}
+th.sorted::after{content:" ▼";color:var(--green)}
+th.sorted.asc::after{content:" ▲"}
+td{padding:2px 5px;border-bottom:1px solid #0d1117;white-space:nowrap;max-width:160px;overflow:hidden;text-overflow:ellipsis}
+tr{cursor:pointer}tr:hover td{background:var(--bg3)}
+tr.selected td{background:#1a2744;border-bottom-color:#1e3a5f}
+.val-col{text-align:right;font-variant-numeric:tabular-nums}
+.score-cell{font-weight:700}
+.score-high{color:var(--red)}.score-med{color:var(--orange)}.score-low{color:var(--green)}.score-none{color:var(--text2)}
+.score-bar{display:inline-block;height:8px;border-radius:1px;vertical-align:middle;margin-left:3px}
+.flag-tag{display:inline-block;padding:0 3px;border-radius:2px;font-size:8px;font-weight:600;margin:0 1px}
+.flag-veg{background:#1a3020;color:#3fb950}.flag-flood{background:#30201a;color:#f0883e}.flag-struct{background:#301a1a;color:#f85149}.flag-neg{background:#2a1a3d;color:#bc8cff}.flag-vac{background:#3d1a2a;color:#ff6b9d}
+.fema-badge{display:inline-block;padding:0 3px;border-radius:2px;font-size:8px;font-weight:600}
+.fema-high{background:#3d1a1a;color:var(--red)}.fema-mod{background:#3d2e1a;color:var(--orange)}.fema-low{background:#1a2d1a;color:var(--green)}
+
+/* RIGHT PANEL */
+#right{display:grid;grid-template-rows:45% 55%;gap:1px;background:var(--border);overflow:hidden}
+#map{background:var(--bg2)}.leaflet-container{background:var(--bg)!important}
+#detail{background:var(--bg);overflow:auto;padding:6px}
+#detail h3{color:var(--white);font-size:11px;margin-bottom:4px;border-bottom:1px solid var(--border);padding-bottom:3px;display:flex;justify-content:space-between}
+.detail-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:1px}
+.detail-card{background:var(--bg2);padding:4px 6px;border-radius:2px}
+.detail-card .dc-title{font-size:8px;text-transform:uppercase;color:var(--text2);letter-spacing:.3px}
+.detail-card .dc-val{font-size:13px;font-weight:700;color:var(--white)}
+.detail-card .dc-sub{font-size:9px;color:var(--text2);margin-top:1px}
+.prop-table{width:100%;margin-top:4px;font-size:10px}
+.prop-table td{padding:1px 4px;border-bottom:1px solid var(--border)}
+.prop-table .pk{color:var(--text2);width:90px}
+.prop-table .pv{color:var(--white)}
+#ndvi-chart-wrap{margin-top:4px;background:var(--bg2);padding:4px;border-radius:2px}
+#ndvi-chart-wrap canvas{width:100%!important;height:100px!important}
+.detail-flags{margin-top:4px}
+.detail-flag{display:flex;justify-content:space-between;padding:2px 5px;background:var(--bg2);margin-bottom:1px;border-radius:2px;font-size:10px}
+.detail-actions{margin-top:4px;display:flex;gap:3px}
+.detail-actions button{font:9px var(--font);padding:2px 6px;border:1px solid var(--border);background:var(--bg3);color:var(--text);border-radius:2px;cursor:pointer}
+.detail-actions button.hot{border-color:var(--green);color:var(--green)}
+.detail-actions button.hot.active{background:var(--green2);color:var(--white)}
+.detail-actions button.skip.active{background:#333;color:var(--text2)}
+.planet-thumb{max-width:100%;border:1px solid var(--border);border-radius:2px;margin-top:3px;cursor:pointer}
+.planet-dual{display:flex;gap:4px;margin-top:4px}
+.planet-dual .planet-panel{flex:1;text-align:center}
+.planet-dual .planet-panel img{width:100%;border:1px solid var(--border);border-radius:2px;cursor:pointer}
+.planet-dual .planet-panel img:hover{border-color:var(--cyan)}
+.planet-dual .planet-label{font-size:7px;text-transform:uppercase;color:var(--text2);margin-top:2px}
+.planet-change-badge{display:inline-block;font-size:9px;font-weight:700;padding:1px 6px;border-radius:2px;margin:2px 0}
+.planet-caveat{font-size:8px;color:var(--text2);font-style:italic;margin-top:2px}
+/* LIGHTBOX */
+#lightbox-overlay{display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.88);z-index:9999;justify-content:center;align-items:center;flex-direction:column}
+#lightbox-overlay.active{display:flex}
+#lightbox-img{max-height:80vh;max-width:90vw;border:2px solid var(--border);border-radius:4px}
+#lightbox-label{color:var(--white);font-size:12px;font-weight:700;margin-top:8px;text-align:center}
+#lightbox-sub{color:var(--text2);font-size:10px;margin-top:2px}
+#lightbox-close{position:absolute;top:12px;right:18px;color:var(--white);font-size:24px;cursor:pointer;background:none;border:none;font-family:var(--font)}
+#lightbox-close:hover{color:var(--red)}
+#lightbox-nav{display:flex;gap:20px;margin-top:10px}
+#lightbox-nav button{background:var(--bg3);border:1px solid var(--border);color:var(--white);padding:4px 16px;border-radius:3px;cursor:pointer;font:11px var(--font)}
+#lightbox-nav button:hover{background:var(--border)}
+#lightbox-nav button.active-nav{border-color:var(--cyan);color:var(--cyan)}
+
+.status-bar{position:fixed;bottom:0;left:0;right:0;height:18px;background:var(--bg2);border-top:1px solid var(--border);display:flex;align-items:center;padding:0 10px;font-size:10px;color:var(--text2);z-index:100}
+.status-bar .scan-status{margin-left:auto}
+.spinner{display:inline-block;width:10px;height:10px;border:2px solid var(--border);border-top-color:var(--green);border-radius:50%;animation:spin .6s linear infinite;margin-right:4px;vertical-align:middle}
+@keyframes spin{to{transform:rotate(360deg)}}
+/* TOOLTIPS */
+[data-tip]{position:relative}
+[data-tip]:hover::after{content:attr(data-tip);position:absolute;bottom:calc(100% + 4px);left:50%;transform:translateX(-50%);background:#1a2130;color:var(--white);border:1px solid var(--border);padding:4px 8px;border-radius:3px;font-size:10px;white-space:pre-line;max-width:280px;z-index:200;pointer-events:none;line-height:1.3;box-shadow:0 4px 12px rgba(0,0,0,.5)}
+[data-tip]:hover::before{content:'';position:absolute;bottom:calc(100%);left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:#1a2130;z-index:201}
+::-webkit-scrollbar{width:5px;height:5px}::-webkit-scrollbar-track{background:var(--bg)}::-webkit-scrollbar-thumb{background:var(--bg3);border-radius:3px}
+</style>
+</head>
+<body>
+<!-- LIGHTBOX MODAL -->
+<div id="lightbox-overlay" onclick="if(event.target===this)closeLightbox()">
+  <button id="lightbox-close" onclick="closeLightbox()">&times;</button>
+  <img id="lightbox-img" src="" alt=""/>
+  <div id="lightbox-label"></div>
+  <div id="lightbox-sub"></div>
+  <div id="lightbox-nav">
+    <button id="lb-prev" onclick="lightboxNav(-1)">&larr; EARLIEST</button>
+    <button id="lb-next" onclick="lightboxNav(1)">LATEST &rarr;</button>
+  </div>
+</div>
+<div id="app">
+  <div id="header">
+    <span><span class="title">DISTRESS SCANNER</span><span class="mode-tag mode-filter" id="mode-tag">INITIAL FILTER</span></span>
+    <div class="sources">
+      <span class="src-led"><span class="dot on" id="led-naip"></span>NAIP</span>
+      <span class="src-led"><span class="dot on" id="led-fema"></span>FEMA</span>
+      <span class="src-led"><span class="dot off" id="led-sentinel"></span>SENT</span>
+      <span class="src-led"><span class="dot off" id="led-landsat"></span>LSAT</span>
+      <span class="src-led"><span class="dot off" id="led-planet"></span>PLNT</span>
+    </div>
+    <span id="clock"></span>
+  </div>
+
+  <div id="metrics">
+    <div class="metric blue"><span class="val" id="m-total">0</span><span class="label">Parcels</span></div>
+    <div class="metric"><span class="val" id="m-value">$0</span><span class="label">Avg Value</span></div>
+    <div class="metric"><span class="val" id="m-sqft">0</span><span class="label">Avg SqFt</span></div>
+    <div class="metric orange"><span class="val" id="m-flagged">0</span><span class="label">Flagged</span></div>
+    <div class="metric red"><span class="val" id="m-score">--</span><span class="label">Avg Score</span></div>
+    <div class="metric" style="--c:var(--purple)"><span class="val" id="m-composite" style="color:var(--purple)">--</span><span class="label">Avg Comp</span></div>
+    <div class="metric"><span class="val" id="m-conviction" style="color:var(--cyan)">--</span><span class="label">Avg Conv</span></div>
+    <div class="metric green"><span class="val" id="m-hot">0</span><span class="label">Hot</span></div>
+    <div class="metric cyan"><span class="val" id="m-filtered">--</span><span class="label">Showing</span></div>
+  </div>
+
+  <div id="controls">
+    <button class="preset" onclick="loadPreset('gaston')">GASTON 28052</button>
+    <button class="preset" onclick="loadPreset('gaston_scanned')" title="Gaston — scanned parcels only (all types)">GASTON SCANNED</button>
+    <button class="preset" onclick="loadPreset('gaston_leads')" title="Gaston — top distress leads by composite score" style="color:var(--red);border-color:var(--red)">TOP LEADS</button>
+    <button class="preset" onclick="loadPreset('gaston_conviction')" title="Gaston — top conviction (DS+MC+USPS fused)" style="color:var(--cyan);border-color:var(--cyan)">CONVICTION</button>
+    <button class="preset" onclick="loadPreset('meck')">MECKLENBURG SFR</button>
+    <span class="ctrl-sep"></span>
+    <span class="ctrl-label">County</span>
+    <select id="in-county"><option>Gaston</option><option>Mecklenburg</option><option>Union</option><option>Iredell</option><option>Cabarrus</option></select>
+    <span class="ctrl-label">$</span>
+    <input type="number" id="in-minval" placeholder="75K" value="75000" style="width:60px">
+    <input type="number" id="in-maxval" placeholder="300K" value="300000" style="width:60px">
+    <span class="ctrl-label">SqFt</span>
+    <input type="number" id="in-minsq" placeholder="700" style="width:50px">
+    <input type="number" id="in-maxsq" placeholder="4000" style="width:50px">
+    <button onclick="loadParcels()">LOAD</button>
+    <span class="ctrl-sep"></span>
+    <button class="secondary" onclick="document.getElementById('file-input').click()">FILE</button>
+    <input type="file" id="file-input" accept=".json" style="display:none" onchange="handleFile(event)">
+    <button class="secondary" onclick="exportCSV()">CSV</button>
+    <button class="secondary" onclick="exportHot()">HOT</button>
+    <span class="ctrl-sep"></span>
+    <input type="number" id="in-lat" placeholder="Lat" step="0.0001" style="width:75px">
+    <input type="number" id="in-lng" placeholder="Lng" step="0.0001" style="width:75px">
+    <button id="btn-scan" onclick="scanSingle()">SCAN</button>
+    <span class="page-info" id="page-info"></span>
+  </div>
+
+  <!-- FILTER BAR -->
+  <div id="filter-bar">
+    <span class="fb-label">FILTER</span>
+    <input type="text" class="fb-input" id="f-text" placeholder="Search parcel, address, owner..." style="width:180px" oninput="applyAndRender()">
+    <span class="fb-sep"></span>
+
+    <!-- FLAGS -->
+    <span class="fb-label">FLAGS</span>
+    <div class="fb-group" id="flag-pills"></div>
+    <span class="fb-sep"></span>
+
+    <!-- SCORE -->
+    <span class="fb-label">SCORE</span>
+    <input type="number" class="fb-input narrow" id="f-score-min" placeholder="0" min="0" max="10" step="0.5" onchange="applyAndRender()">
+    <span style="color:var(--text2);font-size:8px">–</span>
+    <input type="number" class="fb-input narrow" id="f-score-max" placeholder="10" min="0" max="10" step="0.5" onchange="applyAndRender()">
+    <span class="fb-sep"></span>
+
+    <!-- CONVICTION -->
+    <span class="fb-label">CONV</span>
+    <input type="number" class="fb-input" id="f-conviction-min" placeholder="0" min="0" max="10" step="0.5" style="width:38px" onchange="applyAndRender()">
+    <span class="fb-sep"></span>
+
+    <!-- FEMA -->
+    <span class="fb-label">FEMA</span>
+    <div class="fb-group" id="fema-pills"></div>
+    <span class="fb-sep"></span>
+
+    <!-- CLASS -->
+    <span class="fb-label">CLASS</span>
+    <div class="ms-wrap" id="class-ms"></div>
+    <span class="fb-sep"></span>
+
+    <!-- YEAR BUILT -->
+    <span class="fb-label">YR</span>
+    <input type="number" class="fb-input narrow" id="f-year-min" placeholder="1900" onchange="applyAndRender()">
+    <span style="color:var(--text2);font-size:8px">–</span>
+    <input type="number" class="fb-input narrow" id="f-year-max" placeholder="2025" onchange="applyAndRender()">
+    <span class="fb-sep"></span>
+
+    <!-- VIEW FILTER -->
+    <span class="fb-label">SHOW</span>
+    <div class="fb-group" id="show-pills"></div>
+    <span class="fb-sep"></span>
+
+    <!-- ABSENTEE -->
+    <span class="pill" id="pill-absentee" onclick="toggleAbsentee()">ABSENTEE</span>
+    <span class="fb-sep"></span>
+
+    <!-- CLEAR + COUNT -->
+    <button class="btn-clear" onclick="clearAllFilters()">CLEAR</button>
+    <span id="filter-count-badge"></span>
+  </div>
+
+  <div id="main">
+    <div id="left">
+      <div id="table-wrap">
+        <table>
+          <thead><tr>
+            <th onclick="sortBy('idx')" style="width:30px">#</th>
+            <th onclick="sortBy('parcel_id')">Parcel</th>
+            <th onclick="sortBy('situs_address')">Address</th>
+            <th onclick="sortBy('owner_name')">Owner</th>
+            <th onclick="sortBy('total_value')" class="val-col">Value</th>
+            <th onclick="sortBy('sqft')" class="val-col">SqFt</th>
+            <th onclick="sortBy('year_built')" class="val-col">Yr</th>
+            <th onclick="sortBy('distress_score')">Score</th>
+            <th onclick="sortBy('distress_composite')">Comp</th>
+            <th onclick="sortBy('conviction_score')">Conv</th>
+            <th onclick="sortBy('flags')">Condition</th>
+            <th onclick="sortBy('fema')">FEMA</th>
+            <th style="width:30px">Mk</th>
+          </tr></thead>
+          <tbody id="tbody"></tbody>
+        </table>
+      </div>
+    </div>
+    <div id="splitter"></div>
+    <div id="right">
+      <div id="map"></div>
+      <div id="detail">
+        <h3>SELECT A PARCEL</h3>
+        <div style="color:var(--text2);font-size:10px;padding:4px;line-height:1.5">
+          Use presets or LOAD to pull parcels from DB.<br>
+          Click a row to see full property details.<br><br>
+          <span style="color:var(--white);font-weight:600">Marking parcels:</span><br>
+          &#9733; HOT = promising lead (export with HOT button)<br>
+          &#10005; SKIP = not interested (dimmed on map)<br>
+          Use &#9650;&#9660; arrows in Mk column, detail buttons, or keys.<br>
+          Marks persist in your browser across sessions.<br><br>
+          <span style="color:var(--white);font-weight:600">Keys:</span> J/K=navigate, H=hot, S=skip, /=search
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+<div class="status-bar">
+  <span id="status-text">Ready</span>
+  <span class="scan-status" id="scan-status"></span>
+</div>
+
+<script>
+// ── STATE ──
+let parcels=[], filteredParcels=[], selectedIdx=-1, marks={}, sortCol='idx', sortDir=1, ndviChart=null, mode='filter', parcelIdx=new Map();
+// Persist marks to localStorage — namespaced by state|county|parcel_id
+function markKey(p,fallbackIdx){
+  const pid=p.parcel_id||p||fallbackIdx;
+  const county=typeof p==='object'?(p.county||''):'';
+  const state=typeof p==='object'?(p.state_code||'NC'):'NC';
+  return county?`${state}|${county}|${pid}`:String(pid);
+}
+function saveMarks(){try{localStorage.setItem('ds_marks',JSON.stringify(marks));}catch(e){}}
+function loadMarks(){try{const s=localStorage.getItem('ds_marks');if(s)marks=JSON.parse(s);}catch(e){}}
+const API=location.origin, PAGE_SIZE=500;
+let currentPage=0, totalInDB=0;
+let GMAPS_KEY='';
+let PLANET_ENABLED=false;
+function fetchConfig(attempt){
+  fetch(`${API}/config`).then(r=>r.json()).then(c=>{
+    GMAPS_KEY=c.google_maps_key||'';
+    PLANET_ENABLED=!!c.planet_enabled;
+    if(GMAPS_KEY)loadGMapsAPI(GMAPS_KEY);
+    else if(attempt<3)setTimeout(()=>fetchConfig(attempt+1),2000);
+    // Update Planet LED based on feature flag
+    if(!PLANET_ENABLED){
+      const pLed=document.getElementById('led-planet');
+      if(pLed){pLed.className='dot off';pLed.title='Planet feature-flagged OFF';}
+    }
+  }).catch(()=>{if(attempt<3)setTimeout(()=>fetchConfig(attempt+1),2000);});
+}
+fetchConfig(1);
+
+// Filter state
+const filters={
+  text:'',
+  flags:new Set(),       // 'vegetation_overgrowth','flood_risk','structural_change'
+  scoreMin:null,
+  scoreMax:null,
+  convictionMin:null,
+  femaZones:new Set(),   // 'A','AE','X','VE', etc
+  propClasses:new Set(), // property_class values
+  yearMin:null,
+  yearMax:null,
+  show:'all',            // 'all','scanned','hot','skip','unmarked'
+  absentee:false,
+};
+
+// Known flag types
+const FLAG_DEFS=[
+  {code:'vegetation_overgrowth',label:'VEG',color:'active-green',desc:'Overgrowth'},
+  {code:'vegetation_neglect',label:'NEG',color:'active-purple',desc:'Neglect (bare/abandoned)'},
+  {code:'flood_risk',label:'FLD',color:'active-orange',desc:'Flood Risk'},
+  {code:'structural_change',label:'STR',color:'active-red',desc:'Structural'},
+];
+// Known FEMA zones (populated dynamically + these common ones)
+const FEMA_BASE=['A','AE','AO','VE','X','D'];
+
+// Show modes
+const SHOW_MODES=[
+  {val:'all',label:'ALL'},
+  {val:'scanned',label:'SCANNED',tip:'Only parcels that have been scanned'},
+  {val:'sent',label:'SENT',tip:'Sentinel/Landsat enriched parcels only'},
+  {val:'planet',label:'PLANET',tip:'Planet 3m refined parcels only'},
+  {val:'hot',label:'HOT',tip:'Parcels you marked as Hot'},
+  {val:'skip',label:'SKIP',tip:'Parcels you marked as Skip'},
+  {val:'unmarked',label:'NEW',tip:'Parcels not yet marked'},
+];
+
+// ── MAP ──
+let map, markersLayer;
+function initMap(){
+  map=L.map('map',{zoomControl:false,attributionControl:false}).setView([35.22,-80.84],10);
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png',{maxZoom:19}).addTo(map);
+  L.control.zoom({position:'topright'}).addTo(map);
+  markersLayer=L.layerGroup().addTo(map);
+}
+function updateMapMarkers(){
+  markersLayer.clearLayers();
+  const bounds=[];
+  const displayed=filteredParcels.slice(0,2000);
+  displayed.forEach((p,i)=>{
+    const lat=parseFloat(p.latitude||p.lat); const lng=parseFloat(p.longitude||p.lng);
+    if(!lat||!lng) return;
+    const s=p.distress_score||0;
+    const color=s>=3?'#f85149':s>=1.5?'#f0883e':s>0?'#d29922':'#58a6ff';
+    const mk=getMark(p.parcel_id||i);
+    const m=L.circleMarker([lat,lng],{radius:4,fillColor:color,color:mk==='hot'?'#00ff9f':mk==='skip'?'#333':color,weight:mk?2:1,fillOpacity:mk==='skip'?.2:.7});
+    m.on('click',()=>selectParcel(p._origIdx));
+    m.addTo(markersLayer);
+    bounds.push([lat,lng]);
+  });
+  if(bounds.length) map.fitBounds(bounds,{padding:[15,15]});
+}
+
+// ── CLOCK ──
+setInterval(()=>{const d=new Date();document.getElementById('clock').textContent=d.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+d.toLocaleTimeString('en-US',{hour12:false,hour:'2-digit',minute:'2-digit',second:'2-digit'})},1000);
+
+// ── FILTER LOGIC ──
+function getActiveFilterCount(){
+  let c=0;
+  if(filters.text) c++;
+  if(filters.flags.size>0) c++;
+  if(filters.scoreMin!=null) c++;
+  if(filters.scoreMax!=null) c++;
+  if(filters.convictionMin!=null) c++;
+  if(filters.femaZones.size>0) c++;
+  if(filters.propClasses.size>0) c++;
+  if(filters.yearMin!=null) c++;
+  if(filters.yearMax!=null) c++;
+  if(filters.show!=='all') c++;
+  if(filters.absentee) c++;
+  return c;
+}
+
+function applyFilters(){
+  filteredParcels=parcels.filter((p,idx)=>{
+    p._origIdx=idx; // track original index for selection
+
+    // Text search
+    if(filters.text){
+      const t=filters.text.toLowerCase();
+      const pid=(p.parcel_id||'').toLowerCase();
+      const addr=(p.situs_address||p.address||'').toLowerCase();
+      const owner=(p.owner_name||p.owner||'').toLowerCase();
+      const mail=(p.mailing_address1||'').toLowerCase();
+      if(!pid.includes(t)&&!addr.includes(t)&&!owner.includes(t)&&!mail.includes(t)) return false;
+    }
+
+    // Flags
+    if(filters.flags.size>0){
+      const pFlags=new Set((p.flags||[]).map(f=>f.signal_code));
+      let match=false;
+      for(const f of filters.flags){
+        if(pFlags.has(f)){match=true;break;}
+      }
+      if(!match) return false;
+    }
+
+    // Score range
+    if(filters.scoreMin!=null){
+      if(p.distress_score==null||p.distress_score<filters.scoreMin) return false;
+    }
+    if(filters.scoreMax!=null){
+      if(p.distress_score==null||p.distress_score>filters.scoreMax) return false;
+    }
+
+    // Conviction score min
+    if(filters.convictionMin!=null){
+      if(p.conviction?.score==null||p.conviction.score<filters.convictionMin) return false;
+    }
+
+    // FEMA zones
+    if(filters.femaZones.size>0){
+      const zone=p.fema?.flood_zone||'';
+      if(!filters.femaZones.has(zone)) return false;
+    }
+
+    // Property class
+    if(filters.propClasses.size>0){
+      if(!filters.propClasses.has(p.property_class||'')) return false;
+    }
+
+    // Year built
+    if(filters.yearMin!=null){
+      if(!p.year_built||p.year_built<filters.yearMin) return false;
+    }
+    if(filters.yearMax!=null){
+      if(!p.year_built||p.year_built>filters.yearMax) return false;
+    }
+
+    // Show mode
+    const mark=getMark(p.parcel_id||idx);
+    if(filters.show==='scanned'&&!p.scan_date) return false;
+    if(filters.show==='planet'&&!(p.scan_pass>=3||(p.planet&&p.planet.scene_count>0))) return false;
+    if(filters.show==='sent'&&!(p.sentinel?.months_with_data>0)) return false;
+    if(filters.show==='hot'&&mark!=='hot') return false;
+    if(filters.show==='skip'&&mark!=='skip') return false;
+    if(filters.show==='unmarked'&&mark) return false;
+
+    // Absentee owner heuristic
+    if(filters.absentee){
+      const mailZip=(p.mailing_zip||'').substring(0,5);
+      const situsAddr=(p.situs_address||p.address||'').toLowerCase();
+      const mailAddr=(p.mailing_address1||'').toLowerCase();
+      // If mailing address exists and differs from situs, likely absentee
+      if(!mailAddr||mailAddr===situsAddr) return false;
+      // Also check: if mailing city differs from typical area, flag as absentee
+      // Simple heuristic: mailing address is populated and different from situs
+    }
+
+    return true;
+  });
+}
+
+function clearAllFilters(){
+  filters.text='';
+  filters.flags.clear();
+  filters.scoreMin=null;
+  filters.scoreMax=null;
+  filters.convictionMin=null;
+  filters.femaZones.clear();
+  filters.propClasses.clear();
+  filters.yearMin=null;
+  filters.yearMax=null;
+  filters.show='all';
+  filters.absentee=false;
+  // Reset UI
+  document.getElementById('f-text').value='';
+  document.getElementById('f-score-min').value='';
+  document.getElementById('f-score-max').value='';
+  document.getElementById('f-conviction-min').value='';
+  document.getElementById('f-year-min').value='';
+  document.getElementById('f-year-max').value='';
+  buildFilterPills();
+  applyAndRender();
+}
+
+function applyAndRender(){
+  // Read input values into filter state
+  filters.text=document.getElementById('f-text').value||'';
+  const smin=document.getElementById('f-score-min').value;
+  const smax=document.getElementById('f-score-max').value;
+  filters.scoreMin=smin!==''?parseFloat(smin):null;
+  filters.scoreMax=smax!==''?parseFloat(smax):null;
+  const cmin=document.getElementById('f-conviction-min').value;
+  filters.convictionMin=cmin!==''?parseFloat(cmin):null;
+  const ymin=document.getElementById('f-year-min').value;
+  const ymax=document.getElementById('f-year-max').value;
+  filters.yearMin=ymin!==''?parseInt(ymin):null;
+  filters.yearMax=ymax!==''?parseInt(ymax):null;
+
+  applyFilters();
+  renderTable();
+  updateMetrics();
+  updateMapMarkers();
+  updateFilterBadge();
+}
+
+// ── FILTER PILLS ──
+function buildFilterPills(){
+  // Flag pills
+  const flagCt=buildFlagCounts();
+  const fp=document.getElementById('flag-pills');
+  fp.innerHTML='';
+  FLAG_DEFS.forEach(fd=>{
+    const ct=flagCt[fd.code]||0;
+    const pill=document.createElement('span');
+    pill.className='pill'+(filters.flags.has(fd.code)?' '+fd.color:'');
+    pill.innerHTML=`${fd.label} <span class="pill-ct">${ct}</span>`;
+    pill.title=fd.desc+' ('+ct+')';
+    pill.onclick=()=>{
+      if(filters.flags.has(fd.code)) filters.flags.delete(fd.code);
+      else filters.flags.add(fd.code);
+      buildFilterPills();
+      applyAndRender();
+    };
+    fp.appendChild(pill);
+  });
+
+  // FEMA pills
+  const femaCt=buildFemaCounts();
+  const femaDiv=document.getElementById('fema-pills');
+  femaDiv.innerHTML='';
+  // Get all zones from data + base
+  const allZones=new Set([...FEMA_BASE,...Object.keys(femaCt)]);
+  [...allZones].sort().forEach(zone=>{
+    if(!zone) return;
+    const ct=femaCt[zone]||0;
+    if(ct===0&&!FEMA_BASE.includes(zone)) return;
+    const pill=document.createElement('span');
+    const isHigh=['A','AE','AO','VE','V'].includes(zone);
+    const isMod=['B','X500'].includes(zone);
+    const activeClass=isHigh?'active-red':isMod?'active-orange':'active';
+    pill.className='pill'+(filters.femaZones.has(zone)?' '+activeClass:'');
+    pill.innerHTML=`${zone} <span class="pill-ct">${ct}</span>`;
+    pill.onclick=()=>{
+      if(filters.femaZones.has(zone)) filters.femaZones.delete(zone);
+      else filters.femaZones.add(zone);
+      buildFilterPills();
+      applyAndRender();
+    };
+    femaDiv.appendChild(pill);
+  });
+
+  // Show mode pills
+  const showDiv=document.getElementById('show-pills');
+  showDiv.innerHTML='';
+  SHOW_MODES.forEach(sm=>{
+    // Hide Planet show mode when Planet is disabled
+    if(sm.val==='planet'&&!PLANET_ENABLED)return;
+    const pill=document.createElement('span');
+    pill.className='pill'+(filters.show===sm.val?' active':'');
+    pill.textContent=sm.label;
+    if(sm.tip)pill.title=sm.tip;
+    pill.onclick=()=>{
+      filters.show=sm.val;
+      buildFilterPills();
+      applyAndRender();
+    };
+    showDiv.appendChild(pill);
+  });
+
+  // Absentee pill
+  const abPill=document.getElementById('pill-absentee');
+  abPill.className='pill'+(filters.absentee?' active-purple':'');
+
+  // Property class multi-select
+  buildClassDropdown();
+}
+
+function buildFlagCounts(){
+  const ct={};
+  parcels.forEach(p=>{
+    (p.flags||[]).forEach(f=>{ct[f.signal_code]=(ct[f.signal_code]||0)+1;});
+  });
+  return ct;
+}
+function buildFemaCounts(){
+  const ct={};
+  parcels.forEach(p=>{
+    const zone=p.fema?.flood_zone;
+    if(zone) ct[zone]=(ct[zone]||0)+1;
+  });
+  return ct;
+}
+
+function buildClassDropdown(){
+  const wrap=document.getElementById('class-ms');
+  // Count classes
+  const classCt={};
+  parcels.forEach(p=>{
+    const c=p.property_class||'Unknown';
+    classCt[c]=(classCt[c]||0)+1;
+  });
+  const classes=Object.entries(classCt).sort((a,b)=>b[1]-a[1]);
+
+  const selCount=filters.propClasses.size;
+  const trigLabel=selCount===0?'All':(selCount===1?[...filters.propClasses][0].substring(0,18):selCount+' selected');
+
+  wrap.innerHTML=`
+    <div class="ms-trigger${selCount>0?' has-sel':''}" onclick="toggleDropdown('class-dd')">
+      <span>${trigLabel}</span><span class="ms-arrow">▾</span>
+    </div>
+    <div class="ms-dropdown" id="class-dd">
+      ${classes.map(([cls,ct])=>{
+        const checked=filters.propClasses.has(cls);
+        return `<div class="ms-opt${checked?' checked':''}" onclick="toggleClassFilter('${cls.replace(/'/g,"\\'")}')">
+          <span class="ms-check">${checked?'✓':''}</span>
+          <span>${cls}</span>
+          <span class="ms-ct">${ct}</span>
+        </div>`;
+      }).join('')}
+    </div>`;
+}
+
+function toggleDropdown(id){
+  const dd=document.getElementById(id);
+  dd.classList.toggle('open');
+  // Close on outside click
+  if(dd.classList.contains('open')){
+    setTimeout(()=>{
+      const close=e=>{if(!dd.contains(e.target)&&!dd.previousElementSibling.contains(e.target)){dd.classList.remove('open');document.removeEventListener('click',close);}};
+      document.addEventListener('click',close);
+    },0);
+  }
+}
+
+function toggleClassFilter(cls){
+  if(filters.propClasses.has(cls)) filters.propClasses.delete(cls);
+  else filters.propClasses.add(cls);
+  buildFilterPills();
+  applyAndRender();
+}
+
+function toggleAbsentee(){
+  filters.absentee=!filters.absentee;
+  buildFilterPills();
+  applyAndRender();
+}
+
+function updateFilterBadge(){
+  const ct=getActiveFilterCount();
+  const badge=document.getElementById('filter-count-badge');
+  badge.innerHTML=ct>0?`<span class="filter-badge">${ct}</span>`:'';
+}
+
+// ── METRICS ──
+function updateMetrics(){
+  const vis=filteredParcels;
+  const n=vis.length;
+  const vals=vis.map(p=>parseFloat(p.total_value)||0).filter(v=>v>0);
+  const sqfts=vis.map(p=>parseFloat(p.sqft)||0).filter(v=>v>0);
+  const flagged=vis.filter(p=>(p.flags||[]).length>0).length;
+  const scores=vis.filter(p=>p.distress_score!=null).map(p=>p.distress_score);
+  const avgScore=scores.length?scores.reduce((a,b)=>a+b,0)/scores.length:null;
+  const hot=parcels.filter((p,i)=>getMark(p.parcel_id||i)==='hot').length;
+
+  document.getElementById('m-total').textContent=(totalInDB||parcels.length).toLocaleString();
+  document.getElementById('m-value').textContent=vals.length?'$'+(vals.reduce((a,b)=>a+b,0)/vals.length/1000).toFixed(0)+'K':'--';
+  document.getElementById('m-sqft').textContent=sqfts.length?Math.round(sqfts.reduce((a,b)=>a+b,0)/sqfts.length).toLocaleString():'--';
+  document.getElementById('m-flagged').textContent=flagged;
+  document.getElementById('m-score').textContent=avgScore!=null?avgScore.toFixed(1):'--';
+  const compScores=vis.filter(p=>(p.distress_composite??p.composite?.score)!=null).map(p=>p.distress_composite??p.composite?.score);
+  const avgComp=compScores.length?compScores.reduce((a,b)=>a+b,0)/compScores.length:null;
+  document.getElementById('m-composite').textContent=avgComp!=null?avgComp.toFixed(1):'--';
+  const convScores=vis.filter(p=>p.conviction?.score!=null).map(p=>p.conviction.score);
+  const avgConv=convScores.length?convScores.reduce((a,b)=>a+b,0)/convScores.length:null;
+  document.getElementById('m-conviction').textContent=avgConv!=null?avgConv.toFixed(1):'--';
+  document.getElementById('m-hot').textContent=hot;
+  document.getElementById('m-filtered').textContent=n.toLocaleString();
+
+  const mt=document.getElementById('mode-tag');
+  if(mode==='filter'){mt.textContent='INITIAL FILTER';mt.className='mode-tag mode-filter';}
+  else{mt.textContent='SCANNED';mt.className='mode-tag mode-scanned';}
+}
+
+function updateLEDs(){
+  const setL=(id,on)=>{document.getElementById(id).className='dot '+(on?'on':'off')};
+  setL('led-naip',parcels.some(p=>p.naip));
+  setL('led-fema',parcels.some(p=>p.fema));
+  setL('led-sentinel',parcels.some(p=>p.sentinel&&p.sentinel.months_with_data>0));
+  setL('led-landsat',parcels.some(p=>p.landsat&&p.landsat.months_with_data>0));
+  setL('led-planet',parcels.some(p=>(p.planet&&p.planet.scene_count>0)||(p.scan_pass&&p.scan_pass>=3)));
+}
+
+// ── TABLE ──
+function renderTable(){
+  const sorted=[...filteredParcels];
+  sorted.sort((a,b)=>{
+    let va,vb;
+    switch(sortCol){
+      case'idx':va=a._origIdx;vb=b._origIdx;break;
+      case'total_value':va=parseFloat(a.total_value)||0;vb=parseFloat(b.total_value)||0;break;
+      case'sqft':va=parseFloat(a.sqft)||0;vb=parseFloat(b.sqft)||0;break;
+      case'year_built':va=a.year_built||0;vb=b.year_built||0;break;
+      case'distress_score':va=a.distress_score||0;vb=b.distress_score||0;break;
+      case'distress_composite':va=a.distress_composite??a.composite?.score??0;vb=b.distress_composite??b.composite?.score??0;break;
+      case'conviction_score':va=a.conviction?.score??0;vb=b.conviction?.score??0;break;
+      case'flags':va=(a.flags||[]).length;vb=(b.flags||[]).length;break;
+      case'fema':
+        const femaRank={'VE':6,'V':5,'AO':4,'AE':4,'A':3,'B':2,'X500':2,'X':1,'D':0,'C':1};
+        va=femaRank[a.fema?.flood_zone]||0;vb=femaRank[b.fema?.flood_zone]||0;break;
+      case'situs_address':va=a.situs_address||a.address||'';vb=b.situs_address||b.address||'';break;
+      case'owner_name':va=a.owner_name||a.owner||'';vb=b.owner_name||b.owner||'';break;
+      default:va=a.parcel_id||'';vb=b.parcel_id||'';
+    }
+    if(typeof va==='string')return sortDir*va.localeCompare(vb);
+    return sortDir*(va-vb);
+  });
+
+  const tbody=document.getElementById('tbody');
+  tbody.innerHTML='';
+  sorted.forEach((p,rowIdx)=>{
+    const pid=p.parcel_id||'';
+    const addr=p.situs_address||p.address||'';
+    const owner=p.owner_name||p.owner||'';
+    const val=parseFloat(p.total_value);
+    const sq=parseFloat(p.sqft);
+    const yr=p.year_built;
+    const score=p.distress_score;
+    const flags=p.flags||[];
+    const mark=getMark(pid||p._origIdx);
+    const zone=p.fema?.flood_zone||'';
+    const risk=p.fema?.risk_level||'';
+
+    const scoreClass=score>=3?'score-high':score>=1.5?'score-med':score>0?'score-low':'score-none';
+    const barW=score?Math.min(score/10*40,40):0;
+    const barColor=score>=3?'var(--red)':score>=1.5?'var(--orange)':'var(--green)';
+
+    // Generate assessment tags for this parcel
+    const assess=generateAssessment(p);
+    let condHtml='';
+    const TAG_CSS={green:'flag-veg',red:'flag-struct',orange:'flag-flood',purple:'flag-neg',cyan:'flag-neg',pink:'flag-vac',text2:''};
+    assess.tags.slice(0,3).forEach(t=>{  // max 3 tags in table row
+      const cls=TAG_CSS[t.color]||'';
+      condHtml+=`<span class="flag-tag ${cls}" title="${t.detail}">${t.tag}</span>`;
+    });
+    if(assess.tags.length>3)condHtml+=`<span class="flag-tag" title="${assess.tags.slice(3).map(t=>t.tag+': '+t.detail).join('\n')}">+${assess.tags.length-3}</span>`;
+
+    let femaHtml='';
+    if(zone){
+      const fc=risk==='high'?'fema-high':risk==='moderate'?'fema-mod':'fema-low';
+      femaHtml=`<span class="fema-badge ${fc}">${zone}</span>`;
+    }
+
+    const origIdx=p._origIdx;
+    const tr=document.createElement('tr');
+    if(origIdx===selectedIdx)tr.className='selected';
+    tr.onclick=()=>selectParcel(origIdx);
+    tr.innerHTML=`
+      <td style="color:var(--text2)">${rowIdx+1}</td>
+      <td style="color:var(--white)">${pid.substring(0,12)}</td>
+      <td title="${addr}">${addr.substring(0,22)}</td>
+      <td title="${owner}">${owner.substring(0,16)}</td>
+      <td class="val-col">${val?'$'+(val/1000).toFixed(0)+'K':'--'}</td>
+      <td class="val-col">${sq?sq.toLocaleString():'--'}</td>
+      <td class="val-col" style="color:${yr&&yr<1980?'var(--orange)':'var(--text2)'}">${yr||'--'}</td>
+      <td class="score-cell ${scoreClass}" title="${score!=null?'Score '+score.toFixed(1)+'/10 → '+assess.actionLevel+'\n'+assess.tags.map(t=>t.tag+': '+t.detail).join('\n'):'Not scanned'}">${score!=null?score.toFixed(1):'--'}${barW?`<span class="score-bar" style="width:${barW}px;background:${barColor}"></span>`:''}</td>
+      <td class="val-col" style="color:${(p.distress_composite??p.composite?.score)>=5?'var(--red)':(p.distress_composite??p.composite?.score)>=3?'var(--orange)':'var(--text2)'}" title="${p.composite?'Composite: NDVI slope pctile '+((p.composite.ndvi_slope_pctile??0)).toFixed(0)+'%':''}">${(p.distress_composite??p.composite?.score)!=null?(p.distress_composite??p.composite?.score).toFixed(1):'--'}</td>
+      <td class="val-col score-cell" style="color:${p.conviction?.score>=7?'var(--red)':p.conviction?.score>=5?'var(--orange)':p.conviction?.score>0?'var(--cyan)':'var(--text2)'}" title="${p.conviction?.score!=null?'Conviction: '+p.conviction.score+' ['+(p.conviction.components||[]).join('+')+']'+(p.conviction.mc_signals?' | MC: '+p.conviction.mc_signals+' signals':''):''}">${p.conviction?.score!=null?p.conviction.score.toFixed(1):'--'}</td>
+      <td>${condHtml||'<span style="color:var(--text2)">--</span>'}</td>
+      <td>${femaHtml||'<span style="color:var(--text2)">--</span>'}</td>
+      <td>
+        <span style="cursor:pointer;${mark==='hot'?'color:var(--green)':'color:var(--text2)'}" onclick="event.stopPropagation();toggleMark('${pid||origIdx}','hot')">&#9650;</span>
+        <span style="cursor:pointer;${mark==='skip'?'color:var(--red)':'color:var(--text2)'}" onclick="event.stopPropagation();toggleMark('${pid||origIdx}','skip')">&#9660;</span>
+      </td>`;
+    tbody.appendChild(tr);
+  });
+  const filterCt=getActiveFilterCount();
+  document.getElementById('page-info').textContent=`${filteredParcels.length}/${parcels.length}` + (totalInDB>parcels.length?` of ${totalInDB.toLocaleString()}`:'') + (filterCt>0?` (${filterCt} filters)`:'');
+}
+
+function sortBy(col){if(sortCol===col)sortDir*=-1;else{sortCol=col;sortDir=col==='distress_score'||col==='distress_composite'||col==='conviction_score'||col==='total_value'||col==='sqft'||col==='flags'||col==='fema'?-1:1;}applyAndRender();}
+function rebuildParcelIdx(){parcelIdx.clear();parcels.forEach((p,i)=>{if(p.parcel_id)parcelIdx.set(p.parcel_id,i);parcelIdx.set(String(i),i);});}
+function getMarkKey(id){
+  const idx=parcelIdx.get(id)??parcelIdx.get(String(id));
+  const p=idx!=null?parcels[idx]:null;
+  if(p&&p.county)return `${p.state_code||'NC'}|${p.county}|${p.parcel_id||id}`;
+  return String(id);
+}
+function getMark(id){return marks[getMarkKey(id)];}
+function toggleMark(id,type){const k=getMarkKey(id);marks[k]=marks[k]===type?null:type;saveMarks();applyAndRender();}
+
+// ── NAIP IMAGE URL BUILDERS ──
+const NAIP_BASE='https://imagery.nationalmap.gov/arcgis/rest/services/USGSNAIPPlus/ImageServer/exportImage';
+function buildNaipBbox(lat,lng,bufferM=50){
+  const latOff=bufferM/111000;
+  const lngOff=bufferM/(111000*Math.cos(lat*Math.PI/180));
+  return `${lng-lngOff},${lat-latOff},${lng+lngOff},${lat+latOff}`;
+}
+function buildNaipImageUrl(lat,lng,w=256,h=256,bufferM=50){
+  return `${NAIP_BASE}?bbox=${buildNaipBbox(lat,lng,bufferM)}&bboxSR=4326&imageSR=4326&size=${w},${h}&format=png&f=image`;
+}
+function buildNaipNdviUrl(lat,lng,w=256,h=256,bufferM=50){
+  const rule=encodeURIComponent(JSON.stringify({rasterFunction:'NDVI_Color'}));
+  return `${NAIP_BASE}?bbox=${buildNaipBbox(lat,lng,bufferM)}&bboxSR=4326&imageSR=4326&size=${w},${h}&format=png&f=image&renderingRule=${rule}`;
+}
+
+// ── SELECT PARCEL ──
+function selectParcel(idx){
+  selectedIdx=idx;
+  const p=parcels[idx];if(!p)return;
+  renderTable(); // re-render to highlight
+
+  const lat=parseFloat(p.latitude||p.lat);const lng=parseFloat(p.longitude||p.lng);
+  if(lat&&lng)map.setView([lat,lng],16);
+
+  const d=document.getElementById('detail');
+  const pid=p.parcel_id||'';
+  const addr=p.situs_address||p.address||'';
+  const owner=p.owner_name||p.owner||'';
+  const val=parseFloat(p.total_value);
+  const landV=parseFloat(p.land_value);
+  const impV=parseFloat(p.improvement_value);
+  const sq=parseFloat(p.sqft);
+  const yr=p.year_built;
+  const beds=p.bedrooms;
+  const baths=parseFloat(p.bathrooms);
+  const score=p.distress_score;
+  const mark=getMark(pid||idx);
+  const saleAmt=parseFloat(p.sale_amount);
+  const saleDate=p.sale_date;
+
+  const ndvi=p.naip?.current_ndvi;
+  const histNdvi=p.naip?.mean_historical_ndvi;
+  const change=p.naip?.ndvi_change;
+  const zone=p.fema?.flood_zone;
+  const risk=p.fema?.risk_level;
+  const trend=p.sentinel?.months_with_data>0?p.sentinel:p.landsat?.months_with_data>0?p.landsat:null;
+  const trendSrc=trend===p.sentinel?'Sentinel':trend===p.landsat?'Landsat':null;
+
+  const scoreColor=score>=3?'var(--red)':score>=1.5?'var(--orange)':score>0?'var(--green)':'var(--text2)';
+
+  let html=`<h3><span>${pid}</span><span style="font-size:9px;color:var(--text2)">${p.county||''} ${p.state_code||'NC'}</span></h3>`;
+
+  html+=`<div class="detail-grid">
+    <div class="detail-card"><div class="dc-title">Value</div><div class="dc-val">${val?'$'+val.toLocaleString():'--'}</div>
+      <div class="dc-sub">${landV?'Land $'+landV.toLocaleString():''}${impV?' | Imp $'+impV.toLocaleString():''}</div></div>
+    <div class="detail-card"><div class="dc-title">Size</div><div class="dc-val">${sq?sq.toLocaleString()+' sf':'--'}</div>
+      <div class="dc-sub">${beds?beds+'bd':''}${baths?' / '+baths+'ba':''}${yr?' | Built '+yr:''}</div></div>
+    <div class="detail-card" title="Distress score: weighted sum of flag signals\nGreen (0-1.5) = Low concern\nOrange (1.5-3) = Medium\nRed (3+) = High distress\nMax 10"><div class="dc-title">Score</div><div class="dc-val" style="color:${scoreColor}">${score!=null?score.toFixed(2):'NOT SCANNED'}</div>
+      ${score!=null?`<div style="background:var(--bg);height:3px;border-radius:2px;margin-top:2px"><div style="width:${Math.min(score/10*100,100)}%;height:100%;background:${scoreColor};border-radius:2px"></div></div>`:''}</div>
+  </div>`;
+
+  // NDVI Slope & Composite card
+  const slope=p.naip?.slope_5yr;
+  const slopePctile=p.naip?.slope_pctile??p.composite?.ndvi_slope_pctile;
+  const composite=p.distress_composite??p.composite?.score;
+  const histCount=p.naip?.history_count;
+  const histYears=p.naip?.history_years;
+  if(slope!=null||composite!=null){
+    const slopeColor=slope>0.02?'var(--red)':slope>0.01?'var(--orange)':slope>0?'var(--yellow)':slope<-0.01?'var(--cyan)':'var(--green)';
+    const compColor=composite>=5?'var(--red)':composite>=3?'var(--orange)':composite>0?'var(--green)':'var(--text2)';
+    html+=`<div class="detail-grid" style="margin-top:2px">
+      <div class="detail-card" title="NDVI change per year from linear regression on ${histCount||'?'} NAIP vintages (${histYears||'?'}).\nPositive = increasing vegetation (overgrowth)\nNegative = decreasing (clearing)">
+        <div class="dc-title">NDVI Slope/yr</div>
+        <div class="dc-val" style="color:${slopeColor}">${slope!=null?(slope>=0?'+':'')+slope.toFixed(4):'--'}</div>
+        <div class="dc-sub">${slopePctile!=null?slopePctile.toFixed(0)+'th pctile':'--'}${histCount?' | '+histCount+' pts':''}</div>
+      </div>
+      <div class="detail-card" title="Composite bulk score (0-10)\n70% NDVI slope percentile + 30% FEMA risk\nHigher = more distress signals">
+        <div class="dc-title">Composite</div>
+        <div class="dc-val" style="color:${compColor}">${composite!=null?composite.toFixed(2):'--'}</div>
+        ${composite!=null?`<div style="background:var(--bg);height:3px;border-radius:2px;margin-top:2px"><div style="width:${Math.min(composite/10*100,100)}%;height:100%;background:${compColor};border-radius:2px"></div></div>`:''}</div>
+      <div class="detail-card" title="Historical NAIP years used for slope computation">
+        <div class="dc-title">NAIP History</div>
+        <div class="dc-val" style="font-size:10px;color:var(--white)">${histYears||'--'}</div>
+        <div class="dc-sub">${histCount?histCount+' vintages':''}</div>
+      </div>
+    </div>`;
+  }
+
+  // ── CONVICTION SCORE CARD ──
+  const conv=p.conviction;
+  if(conv&&conv.score!=null){
+    const convColor=conv.score>=7?'var(--red)':conv.score>=5?'var(--orange)':conv.score>0?'var(--cyan)':'var(--text2)';
+    const comps=conv.components||[];
+    const hasDS=comps.includes('DS');
+    const hasMC=comps.includes('MC');
+    const hasVAC=comps.includes('VAC');
+    // Compute actual DS/MC contributions from formula: base = 10*(W_DS*ds_comp + W_MC*mc_comp)/sum
+    // W_DS=0.35, W_MC=0.40, MC_CAP=7.0
+    const dsRaw=p.distress_composite??p.composite?.score;
+    const dsComp=dsRaw!=null?Math.max(0,Math.min(dsRaw/10,1)):null;
+    const mcComp=(conv.mc_score!=null&&conv.mc_signals>0)?Math.max(0,Math.min(conv.mc_score/7.0,1)):null;
+    const wDS=0.35,wMC=0.40;
+    const baseSum=(dsComp!=null?wDS:0)+(mcComp!=null?wMC:0);
+    const dsContrib=baseSum>0&&dsComp!=null?10*wDS*dsComp/baseSum:0;
+    const mcContrib=baseSum>0&&mcComp!=null?10*wMC*mcComp/baseSum:0;
+    const vacBonus=conv.vacancy_bonus||0;
+    // Bar widths as % of 10 (max score)
+    const dsBarW=Math.min(dsContrib/10*100,100);
+    const mcBarW=Math.min(mcContrib/10*100,100);
+    const vacBarW=Math.min(vacBonus/10*100,25);
+    html+=`<div style="margin-top:2px;border-top:1px solid var(--border);padding-top:4px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+        <span style="font-size:8px;text-transform:uppercase;color:var(--text2);font-weight:600">CONVICTION SCORE</span>
+        <span style="font-size:12px;font-weight:700;color:${convColor}">${conv.score.toFixed(2)}</span>
+      </div>
+      <div style="display:flex;height:6px;border-radius:3px;overflow:hidden;background:var(--bg3);margin-bottom:4px" title="DS: ${dsContrib.toFixed(1)} + MC: ${mcContrib.toFixed(1)} + VAC: ${vacBonus}">
+        ${hasDS?`<div style="width:${dsBarW}%;background:var(--blue);transition:width .3s" title="DS: ${dsContrib.toFixed(2)}"></div>`:''}
+        ${hasMC?`<div style="width:${mcBarW}%;background:var(--purple);transition:width .3s" title="MC: ${mcContrib.toFixed(2)}"></div>`:''}
+        ${hasVAC?`<div style="width:${vacBarW}%;background:var(--red2);transition:width .3s" title="VAC: +${vacBonus}"></div>`:''}
+      </div>
+      <div style="display:flex;gap:6px;font-size:9px;margin-bottom:4px">
+        ${hasDS?`<span style="color:var(--blue)">DS ${dsContrib.toFixed(1)}</span>`:''}
+        ${hasMC?`<span style="color:var(--purple)">MC ${mcContrib.toFixed(1)} (${conv.mc_signals||0} sig, raw ${conv.mc_score!=null?conv.mc_score.toFixed(2):'--'})</span>`:''}
+        ${hasVAC?`<span style="color:var(--red2)">VAC +${vacBonus}</span>`:''}
+      </div>`;
+    // MC signal pills
+    if(hasMC&&conv.mc_codes&&conv.mc_codes.length>0){
+      const MC_LABELS={'absentee_owner':'ABSENTEE','high_equity':'HIGH EQ','tax_delinquent':'TAX DEL','pre_foreclosure':'PRE-FC','code_violation':'CODE VIO','probate':'PROBATE','divorce':'DIVORCE','bankruptcy':'BANKRUPT','tired_landlord':'TIRED LL','vacant_land':'VAC LAND','out_of_state':'OUT-STATE','inherited':'INHERIT','senior_owner':'SENIOR','long_ownership':'LONG OWN','high_ltv':'HIGH LTV','mls_expired':'MLS EXP'};
+      html+=`<div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:2px">`;
+      conv.mc_codes.forEach(code=>{
+        const label=MC_LABELS[code]||code.toUpperCase().replace(/_/g,' ');
+        html+=`<span style="font-size:8px;font-weight:600;padding:1px 5px;border-radius:2px;color:var(--purple);background:rgba(188,140,255,.12);border:1px solid rgba(188,140,255,.3)" title="${code}">${label}</span>`;
+      });
+      html+=`</div>`;
+    }
+    html+=`</div>`;
+  }
+
+  // Scan type badge — 3-tier: NAIP+FEMA / NAIP+FEMA+SENT / PLANET 3m
+  const scanPass=p.scan_pass;
+  const scanDate=p.scan_date;
+  const hasPlanet=scanPass>=3||(p.planet&&p.planet.scene_count>0);
+  const hasSentinel=scanPass>=2||(p.sentinel?.months_with_data>0);
+  if(scanPass||scanDate||p.planet||p.sentinel){
+    const scanType=hasPlanet?'PLANET 3m':hasSentinel?'NAIP+FEMA+SENT':'NAIP+FEMA';
+    const scanColor=hasPlanet?'var(--cyan)':hasSentinel?'var(--blue)':'var(--green)';
+    const scanBg=hasPlanet?'rgba(57,210,224,.12)':hasSentinel?'rgba(88,166,255,.12)':'rgba(0,255,159,.12)';
+    const scanTip=hasPlanet?'Planet 3m satellite refinement with multi-temporal change detection':hasSentinel?'NAIP 1m + FEMA + Sentinel-2/Landsat NDVI trends':'Basic scan: NAIP 1m aerial NDVI + FEMA flood zones';
+    html+=`<div style="margin:3px 0;display:flex;align-items:center;gap:6px">
+      <span style="font-size:8px;text-transform:uppercase;color:var(--text2)">Scan:</span>
+      <span style="font-size:9px;padding:1px 5px;border-radius:2px;font-weight:600;background:${scanBg};color:${scanColor};border:1px solid ${scanColor}" title="${scanTip}">${scanType}</span>
+      ${scanDate?`<span style="font-size:9px;color:var(--text2)">${typeof scanDate==='string'?scanDate.substring(0,10):''}</span>`:''}
+      ${p.planet_scan_date?`<span style="font-size:8px;color:var(--text2)" title="Planet last scanned ${typeof p.planet_scan_date==='string'?p.planet_scan_date.substring(0,10):''}. Auto-skipped if &lt;60 days.">PLT:${typeof p.planet_scan_date==='string'?p.planet_scan_date.substring(0,10):''}</span>`:''}
+    </div>`;
+  }
+
+  html+=`<table class="prop-table">
+    <tr><td class="pk">Address</td><td class="pv">${addr}</td></tr>
+    <tr><td class="pk">Owner</td><td class="pv" style="font-weight:600">${owner}${p.owner_name2?' / '+p.owner_name2:''}</td></tr>
+    <tr><td class="pk">Mailing</td><td class="pv">${p.mailing_address1||''}${p.mailing_city?', '+p.mailing_city:''} ${p.mailing_state||''} ${p.mailing_zip||''}</td></tr>
+    <tr><td class="pk">Sqft</td><td class="pv">${sq?sq.toLocaleString()+' sf':'--'}</td></tr>
+    <tr><td class="pk">Bed/Bath</td><td class="pv">${beds||'--'} bd / ${baths||'--'} ba</td></tr>
+    <tr><td class="pk">Year Built</td><td class="pv">${yr||'--'}</td></tr>
+    <tr><td class="pk">Class</td><td class="pv">${p.property_class||'--'}</td></tr>
+    <tr><td class="pk">Last Sale</td><td class="pv">${saleAmt?'$'+saleAmt.toLocaleString():'--'}${saleDate?' on '+saleDate:''}</td></tr>
+    <tr><td class="pk">Tax</td><td class="pv">${p.tax_total?'$'+parseFloat(p.tax_total).toLocaleString():'--'}${p.tax_year?' ('+p.tax_year+')':''}</td></tr>
+    <tr><td class="pk">Legal</td><td class="pv" title="${p.legal_description||''}">${(p.legal_description||'--').substring(0,50)}</td></tr>
+    <tr><td class="pk">Deed</td><td class="pv">${p.deed_book?'Book '+p.deed_book+' / Page '+p.deed_page:'--'}</td></tr>
+  </table>`;
+
+  // NAIP Aerial Image — always available for any parcel with coords (free, no scan needed)
+  if(lat&&lng){
+    const naipUrl=buildNaipImageUrl(lat,lng,300,300);
+    const naipUrlHiRes=buildNaipImageUrl(lat,lng,800,800,100);
+    // If we have a scanned R2 image, prefer that
+    const imgSrc=p.naip?.image_url||naipUrl;
+    html+=`<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px">
+      <div style="display:flex;gap:4px;align-items:flex-start">
+        <div style="flex:1">
+          <div style="font-size:8px;text-transform:uppercase;color:var(--text2);margin-bottom:2px">NAIP AERIAL (1m)</div>
+          <a href="${naipUrlHiRes}" target="_blank" title="Open hi-res in new tab">
+            <img src="${imgSrc}" style="width:100%;border:1px solid var(--border);border-radius:2px;cursor:zoom-in" onerror="this.style.display='none';this.nextElementSibling.style.display='block'" />
+            <div style="display:none;color:var(--text2);font-size:9px;padding:8px;background:var(--bg2);border-radius:2px;text-align:center">No NAIP imagery at this location</div>
+          </a>
+        </div>
+        ${ndvi!=null?`<div style="flex:1">
+          <div style="font-size:8px;text-transform:uppercase;color:var(--text2);margin-bottom:2px">NDVI FALSE COLOR</div>
+          <a href="${buildNaipNdviUrl(lat,lng,800,800,100)}" target="_blank" title="NDVI colormap — hi-res">
+            <img src="${buildNaipNdviUrl(lat,lng,300,300)}" style="width:100%;border:1px solid var(--border);border-radius:2px;cursor:zoom-in" onerror="this.style.display='none'" />
+          </a>
+        </div>`:''}
+      </div>
+    </div>`;
+  }
+
+  // Scan data
+  if(p.naip||p.fema||p.planet){
+    html+=`<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px">`;
+    html+=`<div class="detail-grid">`;
+    if(p.naip){
+      html+=`<div class="detail-card" title="NDVI: Vegetation density index\n0.00-0.10 = Bare ground/pavement\n0.10-0.30 = Sparse (neglect flag)\n0.30-0.50 = Moderate vegetation\n0.50-0.65 = Dense (overgrowth flag)\n0.65+ = Very dense (strong overgrowth)"><div class="dc-title">NAIP NDVI</div><div class="dc-val">${ndvi!=null?ndvi.toFixed(3):'--'}</div>
+        <div class="dc-sub">${change!=null?(change>=0?'+':'')+change.toFixed(3)+' vs baseline':'no baseline'}</div></div>`;
+    }
+    if(p.fema){
+      html+=`<div class="detail-card"><div class="dc-title">FEMA</div><div class="dc-val" style="color:${risk==='high'?'var(--red)':risk==='moderate'?'var(--orange)':'var(--green)'}">${zone||'--'}</div>
+        <div class="dc-sub">${risk||'unknown'} risk</div></div>`;
+    }
+    if(trend){
+      html+=`<div class="detail-card"><div class="dc-title">${trendSrc}</div><div class="dc-val" style="color:${trend.trend_direction==='increasing'?'var(--orange)':'var(--text2)'}">${trend.trend_direction}</div>
+        <div class="dc-sub">${trend.trend_slope!=null?'slope: '+trend.trend_slope.toFixed(4):''}</div></div>`;
+    }
+    if(PLANET_ENABLED&&p.planet&&p.planet.scene_count>0){
+      const pl=p.planet;
+      const cs=pl.change_score;
+      const csPct=cs!=null?Math.round(cs*100):'--';
+      const csColor=cs!=null?(cs>=0.15?'var(--red)':cs>=0.05?'var(--orange)':'var(--green)'):'var(--text2)';
+      const csBg=cs!=null?(cs>=0.15?'rgba(248,81,73,.15)':cs>=0.05?'rgba(240,136,62,.15)':'rgba(0,255,159,.15)'):'rgba(173,186,199,.08)';
+      const spanMonths=pl.temporal_span_days?Math.round(pl.temporal_span_days/30):null;
+      const hasEarliest=!!pl.thumbnail_earliest_url;
+      const hasLatest=!!pl.thumbnail_latest_url;
+      // Build lightbox image array for onclick — stored globally, referenced by index
+      const lbImgs=[];
+      if(hasEarliest)lbImgs.push({url:pl.thumbnail_earliest_url,label:'EARLIEST',sub:pl.date_range?.earliest||''});
+      if(hasLatest)lbImgs.push({url:pl.thumbnail_latest_url,label:'LATEST',sub:pl.date_range?.latest||''});
+      window._planetLB=lbImgs;
+
+      html+=`<div class="detail-card" style="flex:0 0 100%;max-width:100%">
+        <div class="dc-title" style="display:flex;justify-content:space-between;align-items:center">
+          <span>Planet 3m — ${pl.scene_count} scenes</span>
+          ${spanMonths?`<span style="font-size:8px;color:var(--text2)">${spanMonths}mo span</span>`:''}
+        </div>
+        <div style="text-align:center;margin:3px 0">
+          <span class="planet-change-badge" style="color:${csColor};background:${csBg};border:1px solid ${csColor}">CHANGE: ${csPct}%</span>
+          ${cs!=null&&cs>=0.05&&cs<0.15?'<div class="planet-caveat">seasonal variation possible</div>':''}
+        </div>
+        <div class="planet-dual">
+          ${hasEarliest?`<div class="planet-panel">
+            <img src="${pl.thumbnail_earliest_url}" alt="Earliest" onclick="openLightbox(window._planetLB,0)"/>
+            <div class="planet-label">EARLIEST${pl.date_range?.earliest?' — '+pl.date_range.earliest.substring(0,10):''}</div>
+          </div>`:''}
+          ${hasLatest?`<div class="planet-panel">
+            <img src="${pl.thumbnail_latest_url}" alt="Latest" onclick="openLightbox(window._planetLB,${hasEarliest?1:0})"/>
+            <div class="planet-label">LATEST${pl.date_range?.latest?' — '+pl.date_range.latest.substring(0,10):''}</div>
+          </div>`:''}
+        </div>
+      </div>`;
+    }
+    html+=`</div>`;
+    if(trend?.monthly_ndvi?.length>0){
+      html+=`<div id="ndvi-chart-wrap"><canvas id="ndvi-chart"></canvas></div>`;
+    }else if(p.sentinel?.chart_url){
+      html+=`<div style="margin-top:4px"><div style="font-size:8px;text-transform:uppercase;color:var(--text2);margin-bottom:2px">NDVI TREND (${p.sentinel.data_source||'Sentinel-2'})</div><a href="${p.sentinel.chart_url}" target="_blank"><img src="${p.sentinel.chart_url}" style="width:100%;border:1px solid var(--border);border-radius:2px;cursor:zoom-in" onerror="this.style.display='none'"/></a></div>`;
+    }
+    const FLAG_TIP_DETAIL={'vegetation_overgrowth':'Overgrown vegetation (NDVI > 0.50)\nIndicates unmaintained property','vegetation_neglect':'Bare/sparse ground (NDVI 0.10-0.30)\nMay indicate abandoned or stripped lot','flood_risk':'FEMA Special Flood Hazard Area\nHigher insurance costs & damage risk','structural_change':'Structural anomaly detected\nPossible deterioration or demolition'};
+    if((p.flags||[]).length>0){
+      html+=`<div class="detail-flags">`+(p.flags||[]).map(f=>{
+        const pct=f.confidence!=null?Math.round(f.confidence*100)+'%':'--';
+        const barPct=f.confidence!=null?Math.round(f.confidence*100):0;
+        const fc=f.signal_code==='vegetation_overgrowth'?'var(--green)':f.signal_code==='vegetation_neglect'?'var(--purple)':f.signal_code==='flood_risk'?'var(--orange)':'var(--red)';
+        const confTip=f.confidence!=null?'\nConfidence '+pct+': how likely this signal is real\nbased on satellite/FEMA analysis':'';
+        return `<div class="detail-flag" title="${(FLAG_TIP_DETAIL[f.signal_code]||f.signal_code)+confTip}">
+          <span>${f.signal_code}</span>
+          <span style="display:flex;align-items:center;gap:4px">
+            <span style="width:40px;height:4px;background:var(--bg);border-radius:2px;display:inline-block"><span style="display:block;width:${barPct}%;height:100%;background:${fc};border-radius:2px"></span></span>
+            <span style="color:var(--white)">${pct}</span>
+          </span>
+        </div>`;
+      }).join('')+`</div>`;
+    }
+    html+=`</div>`;
+  }
+
+  // ── ASSESSMENT NARRATIVE ──
+  const assess=generateAssessment(p);
+  if(assess.tags.length>0||assess.summary){
+    const alColor=assess.actionLevel==='INVESTIGATE'?'var(--red)':assess.actionLevel==='MONITOR'?'var(--orange)':assess.actionLevel==='UNSCANNED'?'var(--text2)':'var(--green)';
+    html+=`<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:3px">
+        <span style="font-size:8px;text-transform:uppercase;color:var(--text2);font-weight:600">ASSESSMENT</span>
+        <span style="font-size:9px;padding:1px 6px;border-radius:2px;font-weight:700;background:${assess.actionLevel==='INVESTIGATE'?'rgba(248,81,73,.15)':assess.actionLevel==='MONITOR'?'rgba(240,136,62,.15)':assess.actionLevel==='UNSCANNED'?'rgba(173,186,199,.08)':'rgba(0,255,159,.15)'};color:${alColor};border:1px solid ${alColor}">${assess.actionLevel}</span>
+      </div>
+      <div style="display:flex;flex-wrap:wrap;gap:3px;margin-bottom:4px">
+        ${assess.tags.map(t=>{
+          const tc=t.color==='green'?'var(--green)':t.color==='red'?'var(--red)':t.color==='orange'?'var(--orange)':t.color==='purple'?'var(--purple)':t.color==='cyan'?'var(--cyan)':t.color==='pink'?'#ff6b9d':'var(--text2)';
+          const bg=t.color==='green'?'rgba(0,255,159,.1)':t.color==='red'?'rgba(248,81,73,.1)':t.color==='orange'?'rgba(240,136,62,.1)':t.color==='purple'?'rgba(188,140,255,.1)':t.color==='cyan'?'rgba(57,210,224,.1)':t.color==='pink'?'rgba(255,107,157,.12)':'rgba(173,186,199,.08)';
+          return `<span style="font-size:8px;font-weight:700;padding:1px 5px;border-radius:2px;color:${tc};background:${bg};border:1px solid ${tc}" title="${t.detail}">${t.tag}</span>`;
+        }).join('')}
+      </div>
+      <div style="font-size:10px;color:var(--text);line-height:1.5;background:var(--bg2);padding:6px 8px;border-radius:2px;border-left:2px solid ${alColor}">${assess.summary}</div>
+      <div style="font-size:9px;color:${alColor};margin-top:3px;font-weight:600">${assess.recommendation}</div>
+    </div>`;
+  }
+
+  // Embedded Google Street View + Satellite
+  let svId=null;
+  if(lat&&lng){
+    const svCity=p.mailing_city||p.county||'';
+    const fullAddr=addr+(svCity?', '+svCity:'')+(p.state_code?' '+p.state_code:'');
+    const addrEnc=encodeURIComponent(fullAddr);
+    const svDirect=`https://www.google.com/maps/@${lat},${lng},3a,75y,0h,90t/data=!3m1!1e1`;
+    const satDirect=`https://www.google.com/maps/@${lat},${lng},19z`;
+    // Street View: use JS API if key available (computes heading toward property), else link-only
+    svId='sv-'+Date.now();
+    const svEmbed=GMAPS_KEY&&window.google
+      ?`<div id="${svId}" style="width:100%;height:200px;border:1px solid var(--border);border-radius:2px;background:var(--bg2)"></div>`
+      :GMAPS_KEY
+      ?`<div id="${svId}" style="width:100%;height:200px;border:1px solid var(--border);border-radius:2px;background:var(--bg2);display:flex;align-items:center;justify-content:center;color:var(--text2);font-size:10px">Loading Street View...</div>`
+      :`<div style="height:60px;display:flex;align-items:center;justify-content:center;background:var(--bg2);border:1px solid var(--border);border-radius:2px"><a href="${svDirect}" target="_blank" style="color:var(--blue);font-size:11px;text-decoration:none">Open Street View in Google Maps &#8599;</a></div>`;
+    html+=`<div style="margin-top:4px;border-top:1px solid var(--border);padding-top:4px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:2px">
+        <span style="font-size:8px;text-transform:uppercase;color:var(--text2)">STREET VIEW</span>
+        <a href="${svDirect}" target="_blank" style="font-size:8px;color:var(--blue)">Open full &#8599;</a>
+      </div>
+      ${svEmbed}
+      <div style="display:flex;justify-content:space-between;align-items:center;margin:4px 0 2px">
+        <span style="font-size:8px;text-transform:uppercase;color:var(--text2)">GOOGLE SATELLITE</span>
+        <a href="${satDirect}" target="_blank" style="font-size:8px;color:var(--blue)">Open full &#8599;</a>
+      </div>
+      <iframe src="https://maps.google.com/maps?q=${addrEnc}&t=k&z=19&output=embed"
+        style="width:100%;height:200px;border:1px solid var(--border);border-radius:2px" allowfullscreen loading="lazy"></iframe>
+    </div>`;
+  }
+
+  html+=`<div class="detail-actions">
+    <button class="hot ${mark==='hot'?'active':''}" onclick="toggleMark('${pid||idx}','hot')" title="Mark as Hot lead (shortcut: H)\nHot parcels appear in the HOT filter and can be exported">&#9733; HOT</button>
+    <button class="skip ${mark==='skip'?'active':''}" onclick="toggleMark('${pid||idx}','skip')" title="Mark as Skip/Ignore (shortcut: S)\nSkip parcels are dimmed on the map">&#10005; SKIP</button>
+    <button onclick="scanFree(${idx})" title="Free scan: NAIP + FEMA only (no API cost)">SCAN</button>
+    <button onclick="scanSentinel(${idx})" title="Sentinel-2 NDVI trends (1 CDSE request)" style="border-color:var(--blue);color:var(--blue)">SENT</button>
+    <button onclick="scanParcel(${idx})" title="Full scan: NAIP + FEMA + Sentinel${PLANET_ENABLED?' + Planet':''}" style="border-color:var(--cyan);color:var(--cyan)">SCAN+</button>
+    ${PLANET_ENABLED?`<button onclick="scanParcel(${idx},true)" title="Force Planet re-scan (bypasses 60-day guard, burns API budget)" style="border-color:var(--purple);color:var(--purple);font-size:9px">PLT+</button>`:''}
+  </div>
+  <div style="font-size:8px;color:var(--text2);margin-top:2px">Keys: H=hot, S=skip, J/K=next/prev, /=search | SCAN=free, SENT=trends, SCAN+=all${PLANET_ENABLED?', PLT+=force Planet':''}</div>`;
+
+
+  d.innerHTML=html;
+  // Init Street View after DOM insert — JS API computes heading toward property
+  if(svId&&GMAPS_KEY)setTimeout(()=>initStreetView(svId,lat,lng),100);
+  if(trend?.monthly_ndvi?.length>0)setTimeout(()=>renderNDVIChart(trend.monthly_ndvi,trendSrc),50);
+}
+
+// ── NDVI CHART ──
+function renderNDVIChart(data,src){
+  const ctx=document.getElementById('ndvi-chart');if(!ctx)return;
+  if(ndviChart)ndviChart.destroy();
+  ndviChart=new Chart(ctx,{type:'line',data:{labels:data.map(d=>d.month),datasets:[{data:data.map(d=>d.mean_ndvi||d.ndvi||0),borderColor:'#00ff9f',backgroundColor:'rgba(0,255,159,0.1)',borderWidth:1.5,pointRadius:1.5,fill:true,tension:.3}]},
+  options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false},tooltip:{backgroundColor:'#1a2130',bodyColor:'#e6edf3',borderColor:'#1e2a3a',borderWidth:1,bodyFont:{family:'monospace',size:10}}},
+  scales:{x:{ticks:{color:'#768390',font:{size:8,family:'monospace'},maxRotation:45},grid:{color:'#1e2a3a'}},y:{min:0,max:1,ticks:{color:'#768390',font:{size:8,family:'monospace'}},grid:{color:'#1e2a3a'}}}}});
+}
+
+// ── LOAD PARCELS FROM DB ──
+async function loadParcels(overrides={}){
+  const county=overrides.county||document.getElementById('in-county').value;
+  const minVal=overrides.minVal||document.getElementById('in-minval').value;
+  const maxVal=overrides.maxVal||document.getElementById('in-maxval').value;
+  const minSq=overrides.minSq||document.getElementById('in-minsq').value;
+  const maxSq=overrides.maxSq||document.getElementById('in-maxsq').value;
+  const propClass=overrides.propClass||'';
+  const zip=overrides.zip||'';
+  const scannedOnly=overrides.scannedOnly||false;
+  const sortByParam=overrides.sortBy||'';
+  const pageLimit=overrides.limit||PAGE_SIZE;
+  const minConviction=overrides.minConviction||'';
+
+  let url=`${API}/parcels?county=${county}&state=NC&limit=${pageLimit}`;
+  if(propClass)url+=`&property_class=${encodeURIComponent(propClass)}`;
+  if(minVal)url+=`&min_value=${minVal}`;
+  if(maxVal)url+=`&max_value=${maxVal}`;
+  if(minSq)url+=`&min_sqft=${minSq}`;
+  if(maxSq)url+=`&max_sqft=${maxSq}`;
+  if(zip)url+=`&zip=${zip}`;
+  if(scannedOnly)url+=`&scanned_only=true`;
+  if(sortByParam)url+=`&sort_by=${sortByParam}`;
+  if(minConviction)url+=`&min_conviction=${minConviction}`;
+
+  document.getElementById('status-text').innerHTML='<span class="spinner"></span>Loading parcels...';
+  try{
+    const resp=await fetch(url);if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+    const data=await resp.json();
+    parcels=data.parcels;
+    totalInDB=data.total;
+    mode='filter';
+    selectedIdx=-1;
+    clearAllFilters();
+    if(sortByParam==='distress_composite'){sortCol='distress_composite';sortDir=-1;}
+    if(sortByParam==='conviction_score'){sortCol='conviction_score';sortDir=-1;}
+    refresh();
+    document.getElementById('status-text').textContent=`Loaded ${data.count} of ${data.total.toLocaleString()} parcels — ${county} (${propClass||'all classes'}) $${(minVal/1000)||0}K-$${(maxVal/1000)||'∞'}K`;
+  }catch(e){
+    document.getElementById('status-text').textContent='Error: '+e.message;
+  }
+}
+
+function loadPreset(name){
+  if(name==='gaston'){
+    document.getElementById('in-county').value='Gaston';
+    document.getElementById('in-minval').value='75000';
+    document.getElementById('in-maxval').value='300000';
+    document.getElementById('in-minsq').value='';
+    document.getElementById('in-maxsq').value='';
+    loadParcels({county:'Gaston',minVal:75000,maxVal:300000,propClass:'Residential 1 Family',zip:'28052'});
+  }else if(name==='gaston_scanned'){
+    document.getElementById('in-county').value='Gaston';
+    document.getElementById('in-minval').value='';
+    document.getElementById('in-maxval').value='';
+    document.getElementById('in-minsq').value='';
+    document.getElementById('in-maxsq').value='';
+    loadParcels({county:'Gaston',minVal:'',maxVal:'',scannedOnly:true,limit:5000});
+  }else if(name==='gaston_leads'){
+    document.getElementById('in-county').value='Gaston';
+    document.getElementById('in-minval').value='';
+    document.getElementById('in-maxval').value='';
+    document.getElementById('in-minsq').value='';
+    document.getElementById('in-maxsq').value='';
+    loadParcels({county:'Gaston',minVal:'',maxVal:'',scannedOnly:true,sortBy:'distress_composite',limit:500});
+  }else if(name==='gaston_conviction'){
+    document.getElementById('in-county').value='Gaston';
+    document.getElementById('in-minval').value='';
+    document.getElementById('in-maxval').value='';
+    document.getElementById('in-minsq').value='';
+    document.getElementById('in-maxsq').value='';
+    loadParcels({county:'Gaston',minVal:'',maxVal:'',sortBy:'conviction_score',minConviction:1,limit:500});
+  }else if(name==='meck'){
+    document.getElementById('in-county').value='Mecklenburg';
+    document.getElementById('in-minval').value='75000';
+    document.getElementById('in-maxval').value='300000';
+    document.getElementById('in-minsq').value='700';
+    document.getElementById('in-maxsq').value='4000';
+    loadParcels({county:'Mecklenburg',minVal:75000,maxVal:300000,minSq:700,maxSq:4000,propClass:'Single-Family'});
+  }
+}
+
+// ── LIGHTBOX ──
+let lbImages=[];let lbIndex=0;
+function openLightbox(images,startIdx){
+  lbImages=images;lbIndex=startIdx||0;
+  const ol=document.getElementById('lightbox-overlay');
+  ol.classList.add('active');
+  lbRender();
+  document.addEventListener('keydown',lbKey);
+}
+function closeLightbox(){
+  document.getElementById('lightbox-overlay').classList.remove('active');
+  document.removeEventListener('keydown',lbKey);
+}
+function lightboxNav(dir){
+  lbIndex=(lbIndex+dir+lbImages.length)%lbImages.length;
+  lbRender();
+}
+function lbKey(e){
+  if(e.key==='Escape')closeLightbox();
+  if(e.key==='ArrowLeft')lightboxNav(-1);
+  if(e.key==='ArrowRight')lightboxNav(1);
+}
+function lbRender(){
+  const item=lbImages[lbIndex];if(!item)return;
+  document.getElementById('lightbox-img').src=item.url;
+  document.getElementById('lightbox-label').textContent=item.label||'';
+  document.getElementById('lightbox-sub').textContent=item.sub||'';
+  const nav=document.getElementById('lightbox-nav');
+  nav.style.display=lbImages.length<=1?'none':'flex';
+  document.querySelectorAll('#lightbox-nav button').forEach((b,i)=>{
+    b.classList.toggle('active-nav',i===lbIndex);
+    if(lbImages[i])b.textContent=lbImages[i].label;
+  });
+}
+
+// ── SCAN ──
+async function scanParcel(idx,forcePlanet=false){
+  const p=parcels[idx];if(!p)return;
+  const lat=parseFloat(p.latitude||p.lat);const lng=parseFloat(p.longitude||p.lng);
+  document.getElementById('scan-status').innerHTML='<span class="spinner"></span>Scanning '+p.parcel_id+'...';
+  try{
+    let url=`${API}/scan_distress?lat=${lat}&lng=${lng}`;
+    if(p.parcel_id)url+=`&parcel_id=${encodeURIComponent(p.parcel_id)}`;
+    if(p.county)url+=`&county=${encodeURIComponent(p.county)}`;
+    if(forcePlanet)url+=`&force_planet=true`;
+    const resp=await fetch(url);
+    if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+    const result=await resp.json();
+    Object.assign(parcels[idx],result);
+    clearAssessmentCache();
+    mode='scanned';
+    applyAndRender();
+    buildFilterPills();
+    selectParcel(idx);
+    document.getElementById('scan-status').textContent=`${p.parcel_id} scanned — score ${result.distress_score}`;
+  }catch(e){
+    document.getElementById('scan-status').textContent='Error: '+e.message;
+  }
+}
+
+async function scanFree(idx){
+  const p=parcels[idx];if(!p)return;
+  const lat=parseFloat(p.latitude||p.lat);const lng=parseFloat(p.longitude||p.lng);
+  document.getElementById('scan-status').innerHTML='<span class="spinner"></span>Free scan '+p.parcel_id+'...';
+  try{
+    const resp=await fetch(`${API}/scan_free?lat=${lat}&lng=${lng}`);
+    if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+    const result=await resp.json();
+    Object.assign(parcels[idx],result);
+    clearAssessmentCache();
+    mode='scanned';
+    applyAndRender();
+    buildFilterPills();
+    selectParcel(idx);
+    document.getElementById('scan-status').textContent=`${p.parcel_id} free scan — score ${result.distress_score}`;
+  }catch(e){
+    document.getElementById('scan-status').textContent='Error: '+e.message;
+  }
+}
+
+async function scanSentinel(idx){
+  const p=parcels[idx];if(!p)return;
+  const lat=parseFloat(p.latitude||p.lat);const lng=parseFloat(p.longitude||p.lng);
+  document.getElementById('scan-status').innerHTML='<span class="spinner"></span>Sentinel enriching '+p.parcel_id+'...';
+  try{
+    let url=`${API}/enrich_sentinel?lat=${lat}&lng=${lng}&months=12`;
+    if(p.parcel_id)url+=`&parcel_id=${encodeURIComponent(p.parcel_id)}`;
+    if(p.county)url+=`&county=${encodeURIComponent(p.county)}`;
+    if(p.state_code)url+=`&state=${p.state_code}`;
+    const resp=await fetch(url);
+    if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+    const result=await resp.json();
+    // Merge sentinel data into parcel
+    if(result.sentinel_months_data>0){
+      parcels[idx].sentinel={
+        trend_direction:result.sentinel_trend_direction,
+        trend_slope:result.sentinel_trend_slope,
+        latest_ndvi:result.sentinel_latest_ndvi,
+        months_with_data:result.sentinel_months_data,
+        mean_ndvi:result.sentinel_mean_ndvi,
+        data_source:result.sentinel_data_source,
+        chart_url:result.sentinel_chart_url,
+        monthly_ndvi:[],
+      };
+    }
+    if(result.db_write?.status==='ok'){
+      // DB was updated — merge rescored flags too
+      if(result.distress_score!=null)parcels[idx].distress_score=result.distress_score;
+      if(result.distress_flags)parcels[idx].distress_flags=result.distress_flags;
+      parcels[idx].scan_pass=Math.max(parcels[idx].scan_pass||0,2);
+    }
+    clearAssessmentCache();
+    mode='scanned';
+    applyAndRender();
+    buildFilterPills();
+    selectParcel(idx);
+    const src=result.sentinel_data_source||'Sentinel';
+    document.getElementById('scan-status').textContent=`${p.parcel_id} ${src} enriched — ${result.sentinel_trend_direction||'no data'}`;
+  }catch(e){
+    document.getElementById('scan-status').textContent='Sentinel error: '+e.message;
+  }
+}
+
+async function scanSingle(){
+  const lat=parseFloat(document.getElementById('in-lat').value);
+  const lng=parseFloat(document.getElementById('in-lng').value);
+  if(isNaN(lat)||isNaN(lng)){alert('Enter lat/lng');return;}
+  document.getElementById('btn-scan').disabled=true;
+  document.getElementById('scan-status').innerHTML='<span class="spinner"></span>Scanning...';
+  try{
+    const resp=await fetch(`${API}/scan_distress?lat=${lat}&lng=${lng}`);
+    if(!resp.ok)throw new Error(`HTTP ${resp.status}`);
+    const result=await resp.json();
+    parcels.push(result);mode='scanned';
+    rebuildParcelIdx();clearAssessmentCache();
+    applyAndRender();buildFilterPills();selectParcel(parcels.length-1);
+    document.getElementById('scan-status').textContent=`Scan complete — score ${result.distress_score}`;
+  }catch(e){document.getElementById('scan-status').textContent='Error: '+e.message;}
+  document.getElementById('btn-scan').disabled=false;
+}
+
+// ── FILE ──
+function handleFile(e){
+  const file=e.target.files[0];if(!file)return;
+  const reader=new FileReader();
+  reader.onload=(ev)=>{
+    try{
+      const data=JSON.parse(ev.target.result);
+      parcels=Array.isArray(data)?data:data.results||data.parcels||[data];
+      totalInDB=parcels.length;
+      mode=parcels.some(p=>p.naip||p.fema)?'scanned':'filter';
+      selectedIdx=-1;
+      clearAllFilters();
+      refresh();
+      document.getElementById('status-text').textContent=`Loaded ${parcels.length} from ${file.name}`;
+    }catch(err){alert('Parse error: '+err.message);}
+  };reader.readAsText(file);
+}
+
+// ── EXPORT ──
+function exportCSV(){
+  if(!filteredParcels.length)return;
+  const h=['parcel_id','situs_address','owner_name','mailing_address','mailing_city','mailing_state','mailing_zip','total_value','land_value','improvement_value','sqft','year_built','bedrooms','bathrooms','property_class','lat','lng',
+    'distress_score','distress_composite','conviction_score','conviction_base_score','conviction_vacancy_bonus','conviction_components','mc_motivation_score','mc_signal_count','mc_signal_codes',
+    'sentinel_trend_direction','sentinel_trend_slope','sentinel_latest_ndvi',
+    'usps_vacant','usps_address','usps_city','usps_zip',
+    'action_level','condition_tags','fema_zone','fema_risk','ndvi','ndvi_category','ndvi_slope_5yr','flags','flag_details','assessment_summary','recommendation','mark'];
+  const esc=s=>`"${String(s||'').replace(/"/g,'""')}"`;
+  const rows=filteredParcels.map((p,i)=>{
+    const assess=generateAssessment(p);
+    const flags=(p.flags||[]).map(f=>f.signal_code).join(';');
+    const flagDet=(p.flags||[]).map(f=>f.signal_code+'='+((f.confidence||0)*100).toFixed(0)+'%').join(';');
+    const condTags=assess.tags.map(t=>t.tag).join('; ');
+    const conv=p.conviction;
+    const sent=p.sentinel;
+    const usps=p.usps;
+    return [
+      p.parcel_id||'',
+      esc(p.situs_address||p.address||''),
+      esc(p.owner_name||p.owner||''),
+      esc(p.mailing_address1||''),
+      esc(p.mailing_city||''),
+      p.mailing_state||'',
+      p.mailing_zip||'',
+      p.total_value||'',
+      p.land_value||'',
+      p.improvement_value||'',
+      p.sqft||'',
+      p.year_built||'',
+      p.bedrooms||'',
+      p.bathrooms||'',
+      esc(p.property_class||''),
+      p.latitude||p.lat||'',
+      p.longitude||p.lng||'',
+      p.distress_score!=null?p.distress_score.toFixed(1):'',
+      (p.distress_composite??p.composite?.score)!=null?(p.distress_composite??p.composite?.score).toFixed(2):'',
+      conv?.score!=null?conv.score.toFixed(2):'',
+      conv?.base_score!=null?conv.base_score.toFixed(2):'',
+      conv?.vacancy_bonus!=null?conv.vacancy_bonus.toFixed(2):'',
+      conv?.components?conv.components.join('+'):'',
+      conv?.mc_score!=null?conv.mc_score.toFixed(2):'',
+      conv?.mc_signals||'',
+      conv?.mc_codes?conv.mc_codes.join(';'):'',
+      sent?.trend_direction||'',
+      sent?.trend_slope!=null?sent.trend_slope.toFixed(4):'',
+      sent?.latest_ndvi!=null?sent.latest_ndvi.toFixed(3):'',
+      usps?.vacant!=null?(usps.vacant?'YES':'NO'):'',
+      esc(usps?.usps_address||''),
+      esc(usps?.usps_city||''),
+      usps?.usps_zip||'',
+      assess.actionLevel,
+      esc(condTags),
+      p.fema?.flood_zone||'',
+      p.fema?.risk_level||'',
+      p.naip?.current_ndvi!=null?p.naip.current_ndvi.toFixed(3):'',
+      p.naip?.category||p.ndvi_category||'',
+      p.naip?.slope_5yr!=null?p.naip.slope_5yr.toFixed(4):'',
+      flags,
+      flagDet,
+      esc(assess.summary),
+      esc(assess.recommendation),
+      getMark(p.parcel_id||i)||''
+    ];
+  });
+  download('distress_parcels.csv',[h.join(','),...rows.map(r=>r.join(','))].join('\n'),'text/csv');
+}
+function exportHot(){
+  const hot=parcels.filter((p,i)=>getMark(p.parcel_id||i)==='hot');
+  if(!hot.length){alert('No HOT parcels');return;}
+  download('hot_parcels.json',JSON.stringify(hot,null,2),'application/json');
+}
+function download(n,c,t){const b=new Blob([c],{type:t}),a=document.createElement('a');a.href=URL.createObjectURL(b);a.download=n;a.click();}
+
+function refresh(){
+  rebuildParcelIdx();
+  clearAssessmentCache();
+  applyFilters();
+  buildFilterPills();
+  renderTable();
+  updateMetrics();
+  updateLEDs();
+  updateMapMarkers();
+  updateFilterBadge();
+}
+
+// ── KEYBOARD ──
+document.addEventListener('keydown',e=>{
+  if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;
+  if(e.key==='j'||e.key==='ArrowDown'){e.preventDefault();
+    // Navigate within filtered results
+    const currentFilteredIdx=filteredParcels.findIndex(p=>p._origIdx===selectedIdx);
+    const nextIdx=currentFilteredIdx+1;
+    if(nextIdx<filteredParcels.length)selectParcel(filteredParcels[nextIdx]._origIdx);
+  }
+  if(e.key==='k'||e.key==='ArrowUp'){e.preventDefault();
+    const currentFilteredIdx=filteredParcels.findIndex(p=>p._origIdx===selectedIdx);
+    const prevIdx=currentFilteredIdx-1;
+    if(prevIdx>=0)selectParcel(filteredParcels[prevIdx]._origIdx);
+  }
+  if(e.key==='h'){const p=parcels[selectedIdx];if(p)toggleMark(p.parcel_id||selectedIdx,'hot');}
+  if(e.key==='s'&&!e.ctrlKey){const p=parcels[selectedIdx];if(p)toggleMark(p.parcel_id||selectedIdx,'skip');}
+  if(e.key==='/'){e.preventDefault();document.getElementById('f-text').focus();}
+  if(e.key==='Escape'){document.activeElement.blur();}
+});
+
+// ── ASSESSMENT GENERATOR (cached) ──
+const _assessCache=new Map();
+function clearAssessmentCache(){_assessCache.clear();}
+function generateAssessment(p){
+  const cacheKey=p.parcel_id||'_idx_'+parcels.indexOf(p);
+  if(_assessCache.has(cacheKey))return _assessCache.get(cacheKey);
+  const result=_generateAssessmentInner(p);
+  _assessCache.set(cacheKey,result);
+  return result;
+}
+function _generateAssessmentInner(p){
+  const ndvi=p.naip?.current_ndvi;
+  const histNdvi=p.naip?.mean_historical_ndvi;
+  const change=p.naip?.ndvi_change;
+  const zone=p.fema?.flood_zone||'';
+  const risk=p.fema?.risk_level||'';
+  const sfha=p.fema?.is_sfha;
+  const score=p.distress_score;
+  const flags=(p.flags||[]);
+  const flagCodes=new Set(flags.map(f=>f.signal_code));
+  const planet=p.planet;
+  const yr=p.year_built;
+  const scanPass=p.scan_pass;
+
+  const tags=[];       // short condition tags for table + CSV
+  const findings=[];   // sentence fragments for narrative
+  let actionLevel='LOW PRIORITY';
+
+  // ── UNSCANNED GUARD ──
+  const isScanned=!!(p.scan_date||p.naip||p.fema||p.sentinel||p.planet||(p.flags&&p.flags.length>0)||p.distress_score!=null);
+  if(!isScanned){
+    return {tags:[{tag:'UNSCANNED',color:'text2',detail:'Not yet analyzed — no scan data'}],summary:'This property has not been scanned yet. Run a SCAN (free: NAIP + FEMA) or SCAN+ (Planet 3m) to generate an assessment.',actionLevel:'UNSCANNED',recommendation:'Run SCAN to analyze this property.'};
+  }
+
+  // ── VEGETATION ASSESSMENT ──
+  if(ndvi!=null){
+    if(ndvi>=0.65){
+      tags.push({tag:'OVERGROWN',color:'green',detail:'Dense vegetation (NDVI '+ndvi.toFixed(2)+')'});
+      findings.push('Dense vegetation cover (NDVI '+ndvi.toFixed(2)+') suggests the lot is significantly overgrown — likely unmowed, with possible brush or tree encroachment into the structure footprint.');
+      actionLevel='INVESTIGATE';
+    }else if(ndvi>=0.50){
+      tags.push({tag:'VEG HIGH',color:'green',detail:'Above-average vegetation (NDVI '+ndvi.toFixed(2)+')'});
+      findings.push('Elevated vegetation (NDVI '+ndvi.toFixed(2)+') indicates above-normal growth for a residential lot. May indicate irregular maintenance or seasonal overgrowth.');
+      if(actionLevel!=='INVESTIGATE')actionLevel='MONITOR';
+    }else if(ndvi>=0.30){
+      tags.push({tag:'VEG NORMAL',color:'text2',detail:'Normal vegetation (NDVI '+ndvi.toFixed(2)+')'});
+    }else if(ndvi>=0.10){
+      tags.push({tag:'SPARSE',color:'purple',detail:'Bare/sparse ground (NDVI '+ndvi.toFixed(2)+')'});
+      findings.push('Sparse ground cover (NDVI '+ndvi.toFixed(2)+') — the lot shows little to no maintained vegetation. This can indicate an abandoned property, recent clearing, demolition debris, or a paved-over lot.');
+      actionLevel='INVESTIGATE';
+    }else{
+      tags.push({tag:'BARE LOT',color:'red',detail:'No vegetation detected (NDVI '+ndvi.toFixed(2)+')'});
+      findings.push('Near-zero vegetation (NDVI '+ndvi.toFixed(2)+') — essentially bare ground or impervious surface. Could be vacant/demolished lot, under construction, or fully paved.');
+      actionLevel='INVESTIGATE';
+    }
+
+    // Historical change context
+    if(change!=null&&histNdvi!=null){
+      if(change>=0.15){
+        tags.push({tag:'VEG SURGE',color:'orange',detail:'NDVI up '+change.toFixed(2)+' vs history'});
+        findings.push('Vegetation has increased significantly (+'+change.toFixed(2)+') compared to historical baseline ('+histNdvi.toFixed(2)+'), suggesting the property has become overgrown over time — a pattern consistent with neglect or vacancy.');
+      }else if(change<=-0.15){
+        tags.push({tag:'VEG LOSS',color:'orange',detail:'NDVI down '+Math.abs(change).toFixed(2)+' vs history'});
+        findings.push('Vegetation has dropped notably ('+change.toFixed(2)+') from baseline ('+histNdvi.toFixed(2)+'), which could indicate recent clearing, tree removal, or structural changes to the lot.');
+      }
+    }
+  }
+
+  // ── SENTINEL TREND ASSESSMENT ──
+  const sent=p.sentinel;
+  if(sent&&sent.months_with_data>0){
+    const dir=sent.trend_direction;
+    const slope=sent.trend_slope;
+    const src=sent.data_source||'Sentinel-2';
+    const mo=sent.months_with_data;
+    if(dir==='increasing'&&slope>0.005){
+      tags.push({tag:'NDVI RISING',color:'orange',detail:src+' trend slope +'+slope.toFixed(4)+'/mo over '+mo+' months'});
+      findings.push(src+' confirms a rising NDVI trend (+'+slope.toFixed(4)+'/mo over '+mo+' months) — progressive vegetation growth pattern consistent with neglect or abandonment.');
+      if(actionLevel!=='INVESTIGATE')actionLevel='MONITOR';
+    }else if(dir==='decreasing'&&slope<-0.005){
+      tags.push({tag:'NDVI FALLING',color:'red',detail:src+' trend slope '+slope.toFixed(4)+'/mo over '+mo+' months'});
+      findings.push(src+' shows a declining NDVI trend ('+slope.toFixed(4)+'/mo over '+mo+' months) — progressive vegetation loss could indicate clearing, structural damage, or site disturbance.');
+      actionLevel='INVESTIGATE';
+    }else if(dir==='stable'){
+      tags.push({tag:'TREND STABLE',color:'text2',detail:src+' stable over '+mo+' months'});
+    }
+  }
+
+  // ── FLOOD ASSESSMENT ──
+  if(zone){
+    const highZones=['A','AE','AO','VE','V','AR'];
+    if(highZones.includes(zone)){
+      tags.push({tag:'FLOOD '+zone,color:'red',detail:'FEMA Special Flood Hazard Area'});
+      findings.push('Property sits in FEMA flood zone '+zone+' (Special Flood Hazard Area). This means mandatory flood insurance for any federally-backed mortgage, higher overall insurance costs, and documented flood risk. '+
+        (sfha?'Confirmed SFHA designation.':''));
+      if(actionLevel!=='INVESTIGATE')actionLevel='INVESTIGATE';
+    }else if(zone==='X'||zone==='C'){
+      tags.push({tag:'FLOOD MIN',color:'text2',detail:'Minimal flood risk (Zone '+zone+')'});
+    }else{
+      tags.push({tag:'FLOOD '+zone,color:'orange',detail:'Moderate flood risk (Zone '+zone+')'});
+      findings.push('Property is in FEMA flood zone '+zone+' — moderate flood risk. Not in the highest-risk SFHA, but flood events remain possible.');
+      if(actionLevel==='LOW PRIORITY')actionLevel='MONITOR';
+    }
+  }
+
+  // ── USPS VACANCY ASSESSMENT ──
+  if(flagCodes.has('usps_vacancy')){
+    tags.push({tag:'VACANT',color:'pink',detail:'USPS carrier confirmed vacant 90+ days'});
+    findings.push('USPS mail carrier flagged this address as vacant (no mail collected for 90+ days). This is a carrier-confirmed ground signal independent of satellite imagery — one of the strongest indicators of abandonment or owner absence.');
+    actionLevel='INVESTIGATE';
+  }else if(p.usps&&p.usps.vacant===false){
+    tags.push({tag:'OCCUPIED',color:'text2',detail:'USPS confirmed mail delivery active'});
+  }
+
+  // ── CONVICTION SCORE ASSESSMENT ──
+  const conv=p.conviction;
+  if(conv&&conv.score!=null){
+    const comps=(conv.components||[]).join('+');
+    if(conv.score>=8){
+      tags.push({tag:'CONV '+conv.score.toFixed(1),color:'red',detail:'High conviction ('+comps+')'});
+      findings.push('Conviction score of '+conv.score.toFixed(1)+'/10 ['+comps+'] — strong multi-signal convergence from distress satellite data'+(conv.mc_signals?' plus '+conv.mc_signals+' motivation signals':'')+'. Priority investigation target.');
+      actionLevel='INVESTIGATE';
+    }else if(conv.score>=5){
+      tags.push({tag:'CONV '+conv.score.toFixed(1),color:'orange',detail:'Moderate conviction ('+comps+')'});
+      if(actionLevel==='LOW PRIORITY')actionLevel='MONITOR';
+    }
+    if(conv.mc_codes&&conv.mc_codes.length>0){
+      tags.push({tag:'MC:'+conv.mc_signals,color:'purple',detail:'Motivation signals: '+conv.mc_codes.join(', ')});
+    }
+  }
+
+  // ── STRUCTURAL / AGE ASSESSMENT ──
+  if(flagCodes.has('structural_change')){
+    tags.push({tag:'STRUCT CHG',color:'red',detail:'Structural change detected'});
+    findings.push('Structural change was detected via satellite analysis — this could mean a partial demolition, new construction, or major modification to the building footprint.');
+    actionLevel='INVESTIGATE';
+  }
+
+  if(yr&&yr<1970){
+    tags.push({tag:'PRE-1970',color:'orange',detail:'Built '+yr+' — older construction'});
+    findings.push('Built in '+yr+' — older construction that may have deferred maintenance, lead paint concerns, or outdated systems. Age alone is not a distress signal, but combined with other flags it raises priority.');
+    if(actionLevel==='LOW PRIORITY')actionLevel='MONITOR';
+  }
+
+  // ── PLANET 3m ASSESSMENT ──
+  if(planet&&planet.scene_count>0){
+    const sceneCount=planet.scene_count;
+    const changeScore=planet.change_score;
+    const dateRange=planet.date_range;
+
+    if(changeScore!=null){
+      // change_score is 0.0–1.0 (normalized brightness delta)
+      const csPct=Math.round(changeScore*100);
+      if(changeScore>=0.15){
+        tags.push({tag:'CHANGE HIGH',color:'red',detail:'Planet change score '+csPct+'%'});
+        findings.push('Planet 3m satellite detected significant visual change ('+csPct+'%) between '+
+          (dateRange?.earliest?.substring(0,10)||'earliest')+' and '+(dateRange?.latest?.substring(0,10)||'latest')+
+          '. At 3m resolution, this can detect lot-level changes: vegetation clearing/overgrowth cycles, structure appearance/disappearance, or major site disturbance. It cannot identify specific conditions like roof damage or debris — that requires ground verification.');
+        actionLevel='INVESTIGATE';
+      }else if(changeScore>=0.05){
+        tags.push({tag:'CHANGE MOD',color:'orange',detail:'Planet change score '+csPct+'%'});
+        findings.push('Planet 3m shows moderate visual change ('+csPct+'%) over the observation period. This is within the range of normal seasonal variation but could also indicate gradual neglect. The thumbnails should be visually compared for context.');
+        if(actionLevel==='LOW PRIORITY')actionLevel='MONITOR';
+      }else{
+        tags.push({tag:'STABLE',color:'green',detail:'Planet change score '+csPct+'% — stable'});
+        findings.push('Planet 3m imagery shows the property is visually stable ('+csPct+'% change) — no significant lot-level changes detected over the observation window.');
+      }
+    }else{
+      tags.push({tag:'PLANET '+sceneCount+'sc',color:'cyan',detail:sceneCount+' Planet scenes available'});
+      findings.push('Planet captured '+sceneCount+' scenes at this location. Visual comparison of earliest vs latest thumbnails can reveal changes, but no automated change score was computed.');
+    }
+  }
+
+  // ── COMPOSITE SCORE SUMMARY ──
+  if(score!=null){
+    if(score>=4){
+      findings.push('Overall distress score of '+score.toFixed(1)+'/10 places this property in the HIGH distress tier — multiple signals converge, warranting priority investigation via drive-by or skip trace.');
+    }else if(score>=2){
+      findings.push('Distress score of '+score.toFixed(1)+'/10 (MEDIUM) — some concerning signals present. Worth monitoring or adding to a secondary drive-by list.');
+    }else if(score>0){
+      findings.push('Low distress score of '+score.toFixed(1)+'/10 — minor signals detected but nothing strongly concerning from satellite/aerial data alone.');
+    }
+  }
+
+  // ── BUILD NARRATIVE ──
+  let summary='';
+  if(findings.length===0){
+    summary='No satellite distress signals detected for this property. NDVI, flood, and structural indicators all appear normal from available data sources.';
+    if(!tags.length)tags.push({tag:'CLEAR',color:'green',detail:'No distress signals'});
+  }else{
+    summary=findings.join(' ');
+  }
+
+  // Action recommendation — specific to triggered flags
+  let recommendation='';
+  if(actionLevel==='INVESTIGATE'){
+    const actions=[];
+    if(flagCodes.has('usps_vacancy'))actions.push('USPS carrier flagged vacant — skip trace owner, check for abandonment or forwarding address');
+    if(flagCodes.has('vegetation_overgrowth')||ndvi>=0.65)actions.push('Overgrown lot — drive-by to assess yard maintenance vs. neighboring properties');
+    if(flagCodes.has('vegetation_neglect')||(ndvi!=null&&ndvi<0.30&&ndvi>=0.10))actions.push('Sparse/bare lot — check for demolition, clearing, or code violations on-site');
+    if(flagCodes.has('structural_change'))actions.push('Structural change detected — drive-by to verify building condition, look for fire/demolition/construction');
+    if(flagCodes.has('flood_risk'))actions.push('Flood zone — verify flood insurance status, look for water damage or foundation issues');
+    if(planet&&planet.change_score>=0.15)actions.push('Planet 3m shows significant change — compare thumbnails, then ground-truth the site');
+    if(actions.length===0)actions.push('Multiple signals converge — drive-by inspection and skip trace recommended');
+    recommendation='RECOMMENDED: '+actions.join('. ')+'.';
+  }else if(actionLevel==='MONITOR'){
+    recommendation='WATCH LIST: Some signals present but not strongly conclusive. Re-scan in 3-6 months or after next imagery update.';
+  }else{
+    recommendation='No immediate action needed. Standard monitoring only.';
+  }
+
+  return {tags,summary,actionLevel,recommendation};
+}
+
+loadMarks();
+initMap();
+buildFilterPills();
+
+// ── RESIZABLE SPLITTER ──
+(function(){
+  const splitter=document.getElementById('splitter');
+  const main=document.getElementById('main');
+  let dragging=false, startX=0, startRightW=0;
+  splitter.addEventListener('mousedown',e=>{
+    dragging=true; startX=e.clientX;
+    startRightW=document.getElementById('right').offsetWidth;
+    splitter.classList.add('dragging');
+    document.body.style.cursor='col-resize';
+    document.body.style.userSelect='none';
+    e.preventDefault();
+  });
+  document.addEventListener('mousemove',e=>{
+    if(!dragging)return;
+    const dx=startX-e.clientX;
+    const newW=Math.max(300,Math.min(startRightW+dx,window.innerWidth*0.6));
+    main.style.gridTemplateColumns=`1fr 4px ${newW}px`;
+    map.invalidateSize();
+  });
+  document.addEventListener('mouseup',()=>{
+    if(!dragging)return;
+    dragging=false;
+    splitter.classList.remove('dragging');
+    document.body.style.cursor='';
+    document.body.style.userSelect='';
+    map.invalidateSize();
+  });
+})();
+</script>
+</body>
+</html>

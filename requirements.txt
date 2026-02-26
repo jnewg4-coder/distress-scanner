@@ -1,0 +1,36 @@
+# Core
+requests>=2.31.0
+psycopg2-binary>=2.9.9
+python-dotenv>=1.0.0
+
+# Storage (Cloudflare R2)
+boto3>=1.34.0
+
+# Geospatial
+shapely>=2.0.0
+numpy>=1.26.0
+pyproj>=3.6.0
+
+# Satellite imagery
+sentinelhub>=3.10.0
+rasterio>=1.3.0
+pystac-client>=0.7.0
+
+# Planet Labs (3m daily — paid refinement)
+# API key via Planet_API env var, no extra SDK needed (uses requests)
+
+# Visualization
+matplotlib>=3.8.0
+
+# API
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+
+# Logging
+structlog>=23.2.0
+
+# Retry logic
+tenacity>=8.2.0
+
+# Testing
+pytest>=7.4.0

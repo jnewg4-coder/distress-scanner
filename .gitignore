@@ -1,0 +1,16 @@
+.env
+data/
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+*.png
+*.tiff
+*.tif
+.venv/
+venv/
+.netlify/
+node_modules/
