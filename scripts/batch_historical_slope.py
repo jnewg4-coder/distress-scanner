@@ -222,6 +222,10 @@ def main():
     total = len(parcels)
     print(f"  Found {total} parcels needing slope")
 
+    # Release DB connection — parcels are in memory now.
+    # Holding conn open blocks ALTER TABLE needed by other processes.
+    conn.close()
+
     if total == 0:
         print("  No parcels need slope computation.")
         print(f"\n  Computing composite scores (NDVI={args.ndvi_weight}, FEMA={args.fema_weight})...")
@@ -232,7 +236,6 @@ def main():
                                               fema_weight=args.fema_weight)
             comp_conn.close()
             print(f"  Updated {count} parcels with composite scores.")
-        conn.close()
         return
 
     # Graceful shutdown handler
@@ -312,8 +315,6 @@ def main():
                                           fema_weight=args.fema_weight)
         comp_conn.close()
         print(f"  Updated {count} parcels with composite scores.")
-
-    conn.close()
 
 
 if __name__ == "__main__":

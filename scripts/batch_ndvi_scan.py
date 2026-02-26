@@ -243,9 +243,13 @@ def main():
     total = len(parcels)
     print(f"  Found {total} unscanned parcels")
 
+    # Release DB connection immediately — parcels are in memory now.
+    # Holding conn open blocks ALTER TABLE (ACCESS EXCLUSIVE) needed by
+    # other processes/migrations, causing deadlocks on long runs.
+    conn.close()
+
     if total == 0:
         print("  Nothing to scan. All parcels already processed.")
-        conn.close()
         return
 
     # Graceful shutdown handler
@@ -317,8 +321,6 @@ def main():
     if stats['scanned'] > 0:
         print(f"  Rate:    {stats['scanned']/elapsed:.1f} parcels/sec")
         print(f"  Flag %:  {stats['flagged']/stats['scanned']*100:.1f}%")
-
-    conn.close()
 
 
 if __name__ == "__main__":
