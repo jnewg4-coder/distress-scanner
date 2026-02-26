@@ -1,0 +1,79 @@
+[build]
+  publish = "src/dashboard"
+  # No build command needed — static HTML
+
+# API proxy rewrites: Netlify → Railway API
+# Dashboard calls relative URLs (e.g. /parcels, /config)
+# Netlify transparently proxies to Railway — zero CORS, zero hardcoded URLs
+
+[[redirects]]
+  from = "/parcels"
+  to = "https://distress-scanner-api-production.up.railway.app/parcels"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/config"
+  to = "https://distress-scanner-api-production.up.railway.app/config"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/health"
+  to = "https://distress-scanner-api-production.up.railway.app/health"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/scan_distress"
+  to = "https://distress-scanner-api-production.up.railway.app/scan_distress"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/scan_free"
+  to = "https://distress-scanner-api-production.up.railway.app/scan_free"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/enrich_sentinel"
+  to = "https://distress-scanner-api-production.up.railway.app/enrich_sentinel"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/check_usps_vacancy"
+  to = "https://distress-scanner-api-production.up.railway.app/check_usps_vacancy"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/naip_baseline"
+  to = "https://distress-scanner-api-production.up.railway.app/naip_baseline"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/fema_flood"
+  to = "https://distress-scanner-api-production.up.railway.app/fema_flood"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/planet_search"
+  to = "https://distress-scanner-api-production.up.railway.app/planet_search"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/landsat_trends"
+  to = "https://distress-scanner-api-production.up.railway.app/landsat_trends"
+  status = 200
+  force = true
+
+# SPA fallback — serve index.html for any unmatched route
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
