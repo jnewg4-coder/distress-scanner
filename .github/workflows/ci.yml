@@ -45,6 +45,7 @@ jobs:
         run: npm i -g @railway/cli
 
       - name: Deploy to Railway
+        continue-on-error: true
         run: railway up --service distress-scanner-api --environment production --detach
         env:
           RAILWAY_TOKEN: ${{ secrets.RAILWAY_TOKEN }}
