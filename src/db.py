@@ -108,6 +108,56 @@ def write_signal(conn, parcel_uuid: str, signal_type_id: str,
         return result is not None
 
 
+def backfill_coordinates_from_geometry(conn):
+    """
+    Auto-detect parcels missing lat/lng and backfill from parcels.geometry via PostGIS.
+
+    Joins gis_parcels_core → counties → parcels on (county, state_code, parcel_id).
+    Only runs if PostGIS is available and there are parcels to backfill.
+    Idempotent — only updates rows where latitude IS NULL.
+    """
+    try:
+        with conn.cursor() as cur:
+            # Check PostGIS availability
+            cur.execute("SELECT PostGIS_Version()")
+            cur.fetchone()
+
+            # Count missing coordinates that are backfillable
+            cur.execute("""
+                SELECT COUNT(*)
+                FROM gis_parcels_core g
+                JOIN counties c ON lower(c.name) = lower(g.county) AND c.state_code = g.state_code
+                JOIN parcels p ON p.county_id = c.id AND p.parcel_id = g.parcel_id
+                WHERE g.latitude IS NULL AND p.geometry IS NOT NULL
+            """)
+            missing = cur.fetchone()[0]
+
+            if missing == 0:
+                return 0
+
+            cur.execute("""
+                UPDATE gis_parcels_core g
+                SET latitude = ST_Y(p.geometry::geometry),
+                    longitude = ST_X(p.geometry::geometry)
+                FROM parcels p
+                JOIN counties c ON p.county_id = c.id
+                WHERE lower(c.name) = lower(g.county)
+                  AND c.state_code = g.state_code
+                  AND p.parcel_id = g.parcel_id
+                  AND g.latitude IS NULL
+                  AND p.geometry IS NOT NULL
+            """)
+            updated = cur.rowcount
+        conn.commit()
+        if updated > 0:
+            logger.info("coordinates_backfilled", count=updated)
+        return updated
+    except Exception as e:
+        conn.rollback()
+        logger.debug("coordinate_backfill_skipped", reason=str(e))
+        return 0
+
+
 def migrate_add_scan_columns(conn):
     """
     Idempotent migration: add scan result columns to gis_parcels_core.

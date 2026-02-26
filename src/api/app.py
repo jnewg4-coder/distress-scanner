@@ -25,6 +25,7 @@ from src.db import (get_db_connection, migrate_add_scan_columns,
                     migrate_add_sentinel_columns, migrate_add_usps_columns,
                     migrate_add_planet_columns, migrate_add_composite_columns,
                     migrate_add_conviction_columns,
+                    backfill_coordinates_from_geometry,
                     batch_update_sentinel_results,
                     get_planet_scan_date, set_planet_scan_date,
                     update_parcel_planet,
@@ -55,6 +56,7 @@ def run_migrations():
         migrate_add_planet_columns(conn)
         migrate_add_composite_columns(conn)
         migrate_add_conviction_columns(conn)
+        backfill_coordinates_from_geometry(conn)
         conn.close()
         logger.info("startup_migration_ok")
     except Exception as e:
