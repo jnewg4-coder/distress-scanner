@@ -72,6 +72,18 @@
   status = 200
   force = true
 
+[[redirects]]
+  from = "/export"
+  to = "https://distress-scanner-api-production.up.railway.app/export"
+  status = 200
+  force = true
+
+[[redirects]]
+  from = "/checkpoints"
+  to = "https://distress-scanner-api-production.up.railway.app/checkpoints"
+  status = 200
+  force = true
+
 # SPA fallback — serve index.html for any unmatched route
 [[redirects]]
   from = "/*"

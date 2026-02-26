@@ -41,6 +41,7 @@ from src.db import (
     get_parcels_needing_slope,
 )
 from src.naip.baseline import naip_ndvi_fast, naip_ndvi_historical, compute_ndvi_slope
+from src.checkpoint import save_checkpoint, mark_complete
 
 logger = structlog.get_logger("batch_slope")
 
@@ -275,6 +276,10 @@ def main():
                 if len(results_buffer) >= args.flush_every:
                     flush_buffer(dry_run=args.dry_run)
 
+            if stats["sloped"] % 500 == 0 and stats["sloped"] > 0:
+                save_checkpoint(f"slope_{args.county}", dict(stats), total,
+                                extra={"county": args.county, "state": args.state})
+
             print_progress(total, start_time)
 
         # Drain on shutdown
@@ -315,6 +320,8 @@ def main():
                                           fema_weight=args.fema_weight)
         comp_conn.close()
         print(f"  Updated {count} parcels with composite scores.")
+
+    mark_complete(f"slope_{args.county}", dict(stats), total, elapsed)
 
 
 if __name__ == "__main__":

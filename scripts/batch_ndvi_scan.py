@@ -28,6 +28,7 @@ from src.db import get_db_connection, migrate_add_scan_columns, batch_update_sca
 from src.naip.baseline import naip_ndvi_fast
 from src.fema.flood import fema_flood
 from src.analysis.flags import generate_all_flags
+from src.checkpoint import save_checkpoint, mark_complete
 
 logger = structlog.get_logger("batch_scan")
 
@@ -286,6 +287,11 @@ def main():
                 if len(results_buffer) >= args.flush_every:
                     flush_buffer(dry_run=args.dry_run)
 
+            # Checkpoint every 1000 scans
+            if stats["scanned"] % 1000 == 0 and stats["scanned"] > 0:
+                save_checkpoint(f"ndvi_{args.county}", dict(stats), total,
+                                extra={"county": args.county, "state": args.state})
+
             print_progress(total, start_time)
 
         # On shutdown: executor.__exit__ waits for all in-flight futures to
@@ -321,6 +327,8 @@ def main():
     if stats['scanned'] > 0:
         print(f"  Rate:    {stats['scanned']/elapsed:.1f} parcels/sec")
         print(f"  Flag %:  {stats['flagged']/stats['scanned']*100:.1f}%")
+
+    mark_complete(f"ndvi_{args.county}", dict(stats), total, elapsed)
 
 
 if __name__ == "__main__":

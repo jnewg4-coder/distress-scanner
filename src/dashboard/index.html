@@ -271,6 +271,7 @@ tr.selected td{background:#1a2744;border-bottom-color:#1e3a5f}
     <button class="secondary" onclick="document.getElementById('file-input').click()">FILE</button>
     <input type="file" id="file-input" accept=".json" style="display:none" onchange="handleFile(event)">
     <button class="secondary" onclick="exportCSV()">CSV</button>
+    <button class="secondary" onclick="exportFull()">FULL CSV</button>
     <button class="secondary" onclick="exportHot()">HOT</button>
     <span class="ctrl-sep"></span>
     <input type="number" id="in-lat" placeholder="Lat" step="0.0001" style="width:75px">
@@ -1558,6 +1559,16 @@ function exportCSV(){
     ];
   });
   download('distress_parcels.csv',[h.join(','),...rows.map(r=>r.join(','))].join('\n'),'text/csv');
+}
+function exportFull(){
+  const county=document.getElementById('in-county').value;
+  const params=new URLSearchParams({county,state:'NC',sort_by:'conviction_score',limit:'50000'});
+  const comp=document.getElementById('in-min-composite').value;
+  const conv=document.getElementById('in-min-conviction').value;
+  if(comp)params.set('min_composite',comp);
+  if(conv)params.set('min_conviction',conv);
+  if(document.getElementById('chk-scanned').checked)params.set('scanned_only','true');
+  window.open(`${API}/export?${params}`,'_blank');
 }
 function exportHot(){
   const hot=parcels.filter((p,i)=>getMark(p.parcel_id||i)==='hot');

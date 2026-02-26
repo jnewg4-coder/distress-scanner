@@ -87,6 +87,22 @@ def config():
     }
 
 
+@app.get("/checkpoints")
+def api_checkpoints():
+    """Return status of all active/completed batch checkpoints."""
+    import glob
+    from src.checkpoint import CHECKPOINT_DIR
+    checkpoints = {}
+    for path in glob.glob(os.path.join(CHECKPOINT_DIR, "ds_checkpoint_*.json")):
+        try:
+            with open(path) as f:
+                data = json.load(f)
+                checkpoints[data.get("job_name", os.path.basename(path))] = data
+        except Exception:
+            pass
+    return {"checkpoints": checkpoints}
+
+
 @app.get("/dashboard", response_class=HTMLResponse)
 def dashboard():
     """Serve the Command Center dashboard."""
@@ -660,4 +676,126 @@ def api_parcels(
         }
     except Exception as e:
         logger.error("parcels_endpoint_error", error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/export")
+def api_export(
+    county: str = Query(..., description="County name"),
+    state: str = Query("NC", description="State code"),
+    property_class: str = Query(None),
+    min_composite: float = Query(None),
+    min_conviction: float = Query(None),
+    scanned_only: bool = Query(False),
+    flag: str = Query(None, description="Comma-separated flags"),
+    sort_by: str = Query("conviction_score", description="Sort column"),
+    limit: int = Query(50000, le=100000),
+):
+    """Server-side CSV export — streams up to 100K rows."""
+    import csv
+    import io
+    from starlette.responses import StreamingResponse
+
+    try:
+        conn = get_db_connection()
+
+        # Flat columns for CSV — no nested objects
+        csv_cols = [
+            "parcel_id", "pin", "owner_name", "owner_name2",
+            "situs_address", "property_class",
+            "mailing_address1", "mailing_city", "mailing_state", "mailing_zip",
+            "latitude", "longitude", "county", "state_code",
+            "land_value", "improvement_value", "total_value",
+            "sale_date", "sale_amount",
+            "bedrooms", "bathrooms", "sqft", "year_built",
+            "ndvi_score", "ndvi_category", "ndvi_date",
+            "ndvi_slope_5yr", "ndvi_slope_pctile", "ndvi_history_count",
+            "fema_zone", "fema_risk", "fema_sfha",
+            "distress_score", "distress_flags", "distress_composite",
+            "flag_veg", "flag_flood", "flag_structural", "flag_neglect",
+            "flag_vacancy", "vacancy_confidence",
+            "usps_vacant", "usps_address", "usps_city", "usps_zip",
+            "usps_check_date",
+            "sentinel_trend_direction", "sentinel_trend_slope",
+            "sentinel_latest_ndvi", "sentinel_months_data",
+            "conviction_score", "conviction_base_score", "conviction_vacancy_bonus",
+            "conviction_mc_score", "conviction_mc_signals", "conviction_mc_codes",
+            "conviction_components", "conviction_date",
+            "scan_date",
+        ]
+
+        select_cols = ", ".join(csv_cols)
+        where = "WHERE county = %s AND state_code = %s AND latitude IS NOT NULL"
+        params = [county, state]
+
+        if property_class:
+            where += " AND property_class = %s"
+            params.append(property_class)
+        if scanned_only:
+            where += " AND scan_date IS NOT NULL"
+        if min_composite is not None:
+            where += " AND distress_composite >= %s"
+            params.append(min_composite)
+        if min_conviction is not None:
+            where += " AND conviction_score >= %s"
+            params.append(min_conviction)
+        if flag:
+            flag_map = {"veg": "flag_veg", "flood": "flag_flood",
+                        "structural": "flag_structural", "neglect": "flag_neglect",
+                        "vacancy": "flag_vacancy"}
+            flag_cols = [flag_map[f.strip()] for f in flag.split(",")
+                         if f.strip() in flag_map]
+            if flag_cols:
+                or_clause = " OR ".join(f"{col} = TRUE" for col in flag_cols)
+                where += f" AND ({or_clause})"
+
+        sort_map = {
+            "parcel_id": "parcel_id",
+            "distress_score": "distress_score DESC NULLS LAST",
+            "distress_composite": "distress_composite DESC NULLS LAST",
+            "conviction_score": "conviction_score DESC NULLS LAST",
+        }
+        order_by = sort_map.get(sort_by, "conviction_score DESC NULLS LAST")
+
+        query = f"SELECT {select_cols} FROM gis_parcels_core {where} ORDER BY {order_by} LIMIT %s"
+        params.append(limit)
+
+        from psycopg2.extras import RealDictCursor
+        with conn.cursor(cursor_factory=RealDictCursor) as cur:
+            cur.execute(query, params)
+            rows = cur.fetchall()
+        conn.close()
+
+        # Stream CSV
+        def generate():
+            output = io.StringIO()
+            writer = csv.DictWriter(output, fieldnames=csv_cols, extrasaction="ignore")
+            writer.writeheader()
+            yield output.getvalue()
+            output.seek(0)
+            output.truncate(0)
+
+            for row in rows:
+                clean = {}
+                for k in csv_cols:
+                    v = row.get(k)
+                    if hasattr(v, "isoformat"):
+                        clean[k] = v.isoformat()
+                    elif v is None:
+                        clean[k] = ""
+                    else:
+                        clean[k] = v
+                writer.writerow(clean)
+                yield output.getvalue()
+                output.seek(0)
+                output.truncate(0)
+
+        filename = f"distress_{county}_{state}.csv"
+        return StreamingResponse(
+            generate(),
+            media_type="text/csv",
+            headers={"Content-Disposition": f"attachment; filename={filename}"},
+        )
+    except Exception as e:
+        logger.error("export_error", error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
