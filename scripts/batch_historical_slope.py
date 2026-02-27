@@ -37,17 +37,23 @@ from src.db import (
     get_db_connection,
     migrate_add_composite_columns,
     batch_update_slope_results,
+    batch_update_slope_safe,
     compute_composite_scores,
     get_parcels_needing_slope,
+    get_parcels_missing_year,
 )
 from src.naip.baseline import naip_ndvi_fast, naip_ndvi_historical, compute_ndvi_slope
+from src.naip.planetary import discover_latest_naip_year
 from src.checkpoint import save_checkpoint, mark_complete
 
 logger = structlog.get_logger("batch_slope")
 
-# NC NAIP historical years to check (most recent first)
-# Each year = 1 API call per parcel. 6 years × 54K parcels = 324K calls.
-HISTORICAL_YEARS = [2022, 2020, 2018, 2016, 2014, 2012]
+# Rolling window: use latest N NAIP vintages per parcel for slope regression.
+# Keeps ndvi_slope_5yr semantically consistent across counties and time.
+MAX_VINTAGES = 6
+
+# Fallback years if STAC discovery fails (safety net)
+FALLBACK_HISTORICAL_YEARS = [2024, 2022, 2020, 2018, 2016, 2014, 2012]
 
 # Thread-safe results buffer
 results_buffer = deque()
@@ -57,6 +63,9 @@ shutdown_event = threading.Event()
 # Counters
 stats = {"processed": 0, "with_slope": 0, "no_history": 0, "errors": 0, "flushed": 0}
 stats_lock = threading.Lock()
+
+# Set by main() to use safe (non-destructive) update in rescan mode
+_use_safe_update = False
 
 
 def compute_slope_for_parcel(parcel: dict) -> dict | None:
@@ -72,8 +81,12 @@ def compute_slope_for_parcel(parcel: dict) -> dict | None:
     current_date = parcel.get("ndvi_date")
 
     try:
-        # Fetch historical NDVI (6 API calls, each cached for 7 days)
-        historical = naip_ndvi_historical(lat, lng, years=HISTORICAL_YEARS)
+        # Fetch historical NDVI — auto-detect all available years from STAC
+        historical = naip_ndvi_historical(lat, lng, years=None)
+
+        # Rolling window: keep only latest MAX_VINTAGES years
+        historical.sort(key=lambda h: h["year"], reverse=True)
+        historical = historical[:MAX_VINTAGES]
 
         # Build regression points: (year, ndvi)
         points = []
@@ -152,7 +165,8 @@ def flush_buffer(dry_run: bool = False):
         # Fresh connection per flush — Railway PostgreSQL kills idle connections
         flush_conn = get_db_connection()
         try:
-            updated = batch_update_slope_results(flush_conn, valid)
+            updater = batch_update_slope_safe if _use_safe_update else batch_update_slope_results
+            updated = updater(flush_conn, valid)
             with stats_lock:
                 stats["flushed"] += updated
             logger.info("slope_buffer_flushed", batch_size=len(valid), updated=updated)
@@ -186,7 +200,7 @@ def main():
     parser.add_argument("--county", required=True, help="County name (e.g. Gaston)")
     parser.add_argument("--state", default="NC", help="State code")
     parser.add_argument("--limit", type=int, default=None, help="Max parcels to process")
-    parser.add_argument("--workers", type=int, default=10, help="Thread pool size")
+    parser.add_argument("--workers", type=int, default=20, help="Thread pool size")
     parser.add_argument("--flush-every", type=int, default=50, help="Flush to DB every N results")
     parser.add_argument("--dry-run", action="store_true", help="Print results, don't write to DB")
     parser.add_argument("--composite-only", action="store_true",
@@ -195,6 +209,8 @@ def main():
                         help="Weight for NDVI slope in composite (default 0.70)")
     parser.add_argument("--fema-weight", type=float, default=0.30,
                         help="Weight for FEMA risk in composite (default 0.30)")
+    parser.add_argument("--rescan-new-years", action="store_true",
+                        help="Re-scan parcels missing data for the latest NAIP year (safe update)")
     args = parser.parse_args()
 
     print(f"\n=== Batch NDVI Slope + Composite — {args.county}, {args.state} ===")
@@ -217,15 +233,38 @@ def main():
         conn.close()
         return
 
-    # Load parcels needing slope
-    print("  Loading parcels needing slope computation...")
-    parcels = get_parcels_needing_slope(conn, args.county, args.state, limit=args.limit)
-    total = len(parcels)
-    print(f"  Found {total} parcels needing slope")
+    # Rescan mode: find parcels missing the latest NAIP year
+    if args.rescan_new_years:
+        print(f"  Discovering latest NAIP year for {args.state}...")
+        latest_year = discover_latest_naip_year(args.state, force_refresh=True)
+        if latest_year is None:
+            print("  ERROR: Could not discover NAIP years from STAC. Aborting.")
+            conn.close()
+            return
+        print(f"  Latest NAIP year: {latest_year}")
+        print(f"  Loading parcels missing year {latest_year}...")
+        parcels = get_parcels_missing_year(conn, args.county, args.state,
+                                            latest_year, limit=args.limit)
+        total = len(parcels)
+        print(f"  Found {total} parcels missing year {latest_year}")
+        conn.close()
+        if total == 0:
+            print(f"  All parcels already have {latest_year} data.")
+            return
+        # Use safe update — won't overwrite if new data is sparser
+        global _use_safe_update
+        _use_safe_update = True
 
-    # Release DB connection — parcels are in memory now.
-    # Holding conn open blocks ALTER TABLE needed by other processes.
-    conn.close()
+    # Load parcels needing slope (normal mode — first-time computation)
+    if not args.rescan_new_years:
+        print("  Loading parcels needing slope computation...")
+        parcels = get_parcels_needing_slope(conn, args.county, args.state, limit=args.limit)
+        total = len(parcels)
+        print(f"  Found {total} parcels needing slope")
+
+        # Release DB connection — parcels are in memory now.
+        # Holding conn open blocks ALTER TABLE needed by other processes.
+        conn.close()
 
     if total == 0:
         print("  No parcels need slope computation.")
@@ -247,7 +286,7 @@ def main():
     signal.signal(signal.SIGINT, handle_sigint)
 
     start_time = time.time()
-    est_calls = total * (len(HISTORICAL_YEARS) + 1)  # +1 for potential current year dedup
+    est_calls = total * (MAX_VINTAGES + 1)  # +1 for STAC search per parcel
     est_time_min = est_calls / (4 * args.workers) / 60
     print(f"  ~{est_calls} API calls estimated, ~{est_time_min:.0f} min at {4*args.workers} calls/sec")
     print(f"  Workers: {args.workers} | Flush every: {args.flush_every}"
@@ -276,7 +315,7 @@ def main():
                 if len(results_buffer) >= args.flush_every:
                     flush_buffer(dry_run=args.dry_run)
 
-            if stats["sloped"] % 500 == 0 and stats["sloped"] > 0:
+            if stats["with_slope"] % 500 == 0 and stats["with_slope"] > 0:
                 save_checkpoint(f"slope_{args.county}", dict(stats), total,
                                 extra={"county": args.county, "state": args.state})
 

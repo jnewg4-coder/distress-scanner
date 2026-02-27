@@ -20,6 +20,8 @@ import threading
 from pathlib import Path
 
 import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 import rasterio
 from rasterio.windows import Window
 from pyproj import Transformer
@@ -30,6 +32,27 @@ logger = structlog.get_logger("naip.planetary")
 STAC_SEARCH_URL = "https://planetarycomputer.microsoft.com/api/stac/v1/search"
 CACHE_DIR = Path("data/cache/naip_pc")
 CACHE_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
+
+# Representative points per state for STAC year discovery (1 probe per state)
+STATE_PROBE_POINTS = {
+    "NC": (35.78, -78.64),   # Raleigh
+    "TN": (36.16, -86.78),   # Nashville
+    "AR": (34.75, -92.29),   # Little Rock
+    "PA": (40.27, -76.88),   # Harrisburg
+}
+
+
+def _stac_session() -> requests.Session:
+    """Session with retry/backoff for Planetary Computer STAC API."""
+    s = requests.Session()
+    retry = Retry(total=3, backoff_factor=1.0,
+                  status_forcelist=[429, 500, 502, 503, 504],
+                  allowed_methods=["GET", "POST"])
+    s.mount("https://", HTTPAdapter(max_retries=retry))
+    return s
+
+
+_session = _stac_session()
 
 # Thread-safe transformer cache (CRS string → Transformer)
 _transformer_cache = {}
@@ -95,12 +118,12 @@ def search_naip_items(lat: float, lng: float, years: list[int] = None) -> list[d
     payload = {
         "collections": ["naip"],
         "intersects": {"type": "Point", "coordinates": [lng, lat]},
-        "limit": 20,
+        "limit": 50,
         "sortby": [{"field": "datetime", "direction": "desc"}],
     }
 
     try:
-        resp = requests.post(STAC_SEARCH_URL, json=payload, timeout=30)
+        resp = _session.post(STAC_SEARCH_URL, json=payload, timeout=30)
         resp.raise_for_status()
         features = resp.json().get("features", [])
     except Exception as e:
@@ -130,6 +153,32 @@ def search_naip_items(lat: float, lng: float, years: list[int] = None) -> list[d
     if years:
         items = [i for i in items if i["year"] in years]
     return items
+
+
+def discover_all_available_years(state_code: str, probe_point: tuple = None,
+                                  force_refresh: bool = False) -> list[int]:
+    """STAC search at a representative point → sorted list of all available NAIP years.
+
+    Uses search_naip_items() (cached 7 days unless force_refresh).
+    1 HTTP call per state, not per parcel.
+    """
+    state_upper = state_code.upper()
+    if not probe_point and state_upper not in STATE_PROBE_POINTS:
+        raise ValueError(f"Unknown state '{state_code}'. Add to STATE_PROBE_POINTS or pass probe_point.")
+    lat, lng = probe_point or STATE_PROBE_POINTS[state_upper]
+    if force_refresh:
+        ck = _cache_key("stac_search", {"lat": lat, "lng": lng})
+        cache_file = CACHE_DIR / f"{ck}.json"
+        cache_file.unlink(missing_ok=True)
+    items = search_naip_items(lat, lng, years=None)
+    return sorted([i["year"] for i in items])
+
+
+def discover_latest_naip_year(state_code: str, probe_point: tuple = None,
+                               force_refresh: bool = False) -> int | None:
+    """Latest NAIP year available for a state."""
+    years = discover_all_available_years(state_code, probe_point, force_refresh)
+    return years[-1] if years else None
 
 
 def read_ndvi_from_cog(lat: float, lng: float, cog_url: str,
@@ -201,8 +250,8 @@ def get_historical_ndvi(lat: float, lng: float,
 
     Returns: [{"year": 2020, "ndvi": 0.32, "date": "2020-07-12"}, ...]
     """
-    if years is None:
-        years = [2022, 2020, 2018, 2016, 2014, 2012]
+    # years=None → search_naip_items returns ALL available years from STAC.
+    # Callers (batch_historical_slope) apply rolling window after fetch.
 
     # Search STAC for available items
     items = search_naip_items(lat, lng, years=years)

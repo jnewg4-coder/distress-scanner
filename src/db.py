@@ -451,6 +451,82 @@ def get_parcels_needing_slope(conn, county: str, state: str = None,
         return [dict(row) for row in cur.fetchall()]
 
 
+def get_parcels_missing_year(conn, county: str, state: str, year: int,
+                              limit: int = None) -> list[dict]:
+    """
+    Parcels with existing slope data but missing a specific year in ndvi_history_years.
+
+    Used by --rescan-new-years to find parcels that need recomputation when
+    a new NAIP vintage becomes available.
+
+    Uses delimiter-safe matching: wraps value in commas to avoid substring
+    false positives (e.g., '20240' matching '2024').
+    """
+    query = """
+        SELECT parcel_id, latitude, longitude, county, state_code,
+               ndvi_score, ndvi_date, ndvi_slope_5yr, ndvi_history_count
+        FROM gis_parcels_core
+        WHERE county = %s
+            AND state_code = %s
+            AND ndvi_slope_5yr IS NOT NULL
+            AND latitude IS NOT NULL AND longitude IS NOT NULL
+            AND (',' || COALESCE(ndvi_history_years, '') || ',')
+                NOT LIKE '%%,' || %s || ',%%'
+    """
+    params = [county, state, str(year)]
+
+    query += " ORDER BY md5(parcel_id)"
+
+    if limit:
+        query += " LIMIT %s"
+        params.append(limit)
+
+    with conn.cursor(cursor_factory=RealDictCursor) as cur:
+        cur.execute(query, params)
+        return [dict(row) for row in cur.fetchall()]
+
+
+def batch_update_slope_safe(conn, results: list[dict]) -> int:
+    """
+    Safe bulk UPDATE for rescan mode — only overwrites slope when new data is better.
+
+    Guard conditions:
+    - Never write NULL slope over a real slope
+    - Only update when new history_count >= existing count
+    - If STAC is down and returns 0 history → slope=None → row untouched
+
+    Returns count of actually updated rows.
+    """
+    if not results:
+        return 0
+
+    update_sql = """
+        UPDATE gis_parcels_core SET
+            ndvi_slope_5yr = %(ndvi_slope_5yr)s,
+            ndvi_history_count = %(ndvi_history_count)s,
+            ndvi_history_years = %(ndvi_history_years)s
+        WHERE parcel_id = %(parcel_id)s AND county = %(county)s
+            AND %(ndvi_slope_5yr)s IS NOT NULL
+            AND %(ndvi_history_count)s >= COALESCE(ndvi_history_count, 0)
+    """
+
+    from psycopg2.extras import execute_batch
+
+    total_updated = 0
+    chunk_size = 500
+    for i in range(0, len(results), chunk_size):
+        chunk = results[i:i + chunk_size]
+        with conn.cursor() as cur:
+            for row in chunk:
+                cur.execute(update_sql, row)
+                total_updated += cur.rowcount
+        conn.commit()
+
+    logger.info("slope_safe_update_complete",
+                total_submitted=len(results), actually_updated=total_updated)
+    return total_updated
+
+
 def migrate_add_planet_columns(conn):
     """
     Idempotent migration: add Planet refinement columns to gis_parcels_core.

@@ -149,9 +149,8 @@ def naip_ndvi_historical(lat: float, lng: float,
 
     Returns: [{"year": 2020, "ndvi": 0.45, "date": "2020-06-15"}, ...]
     """
-    if years is None:
-        years = [2022, 2020, 2018, 2016, 2014, 2012]
-
+    # years=None → planetary.get_historical_ndvi returns ALL available years from STAC.
+    # Callers apply rolling window after fetch.
     from src.naip.planetary import get_historical_ndvi
     return get_historical_ndvi(lat, lng, years=years)
 

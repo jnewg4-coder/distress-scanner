@@ -219,7 +219,7 @@ def main():
     parser.add_argument("--county", required=True, help="County name (e.g. Gaston)")
     parser.add_argument("--state", default="NC", help="State code")
     parser.add_argument("--limit", type=int, default=None, help="Max parcels to scan")
-    parser.add_argument("--workers", type=int, default=10, help="Thread pool size")
+    parser.add_argument("--workers", type=int, default=20, help="Thread pool size")
     parser.add_argument("--flush-every", type=int, default=100, help="Flush to DB every N results")
     parser.add_argument("--dry-run", action="store_true", help="Print results, don't write to DB")
     parser.add_argument("--property-class", default=None,
